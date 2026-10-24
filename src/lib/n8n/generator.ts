@@ -77,6 +77,18 @@ export function generateN8nWorkflowJson(blueprint: WorkflowBlueprint): N8nWorkfl
     } else if (node.id === 'node_slack_normal_priority') {
       x = 1600;
       y = 280;
+    } else if (node.id === 'node_http_health_check') {
+      x = 520;
+      y = 300;
+    } else if (node.id === 'node_if_status') {
+      x = 800;
+      y = 300;
+    } else if (node.id === 'node_slack_success') {
+      x = 1080;
+      y = 200;
+    } else if (node.id === 'node_slack_failure') {
+      x = 1080;
+      y = 420;
     }
 
     const n8nNode: N8nWorkflowNode = {

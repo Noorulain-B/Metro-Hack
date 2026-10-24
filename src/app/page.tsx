@@ -74,6 +74,13 @@ export default function WorkflowBuilderPage() {
 
     setLoading(true);
     setErrorMsg(null);
+    setBlueprint(null);
+    setOptimization(null);
+    setValidationReport(null);
+    setWorkflowJson(null);
+    setGeneratedPrompt('');
+    setSelectedNode(null);
+    setIsSaved(false);
     setStatusMessage('Analyzing automation intent & verified nodes...');
 
     try {

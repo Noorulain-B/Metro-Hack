@@ -30,10 +30,21 @@ export class MockAiProvider implements AiProvider {
     options?: AiGenerationOptions
   ): Promise<{ requirement: RequirementSpecification; metrics: AiUsageMetrics }> {
     const promptLower = userPrompt.toLowerCase();
-    const hasAiMention = promptLower.includes('ai') || promptLower.includes('agent') || promptLower.includes('classify') || promptLower.includes('sentiment');
-    const isScheduled = promptLower.includes('schedule') || promptLower.includes('daily') || promptLower.includes('hourly') || promptLower.includes('cron');
+    const hasAiMention =
+      /\b(ai|agent|llm|gpt|gemini|claude)\b/i.test(userPrompt) ||
+      promptLower.includes('sentiment') ||
+      promptLower.includes('classify');
+    const isScheduled =
+      promptLower.includes('schedule') ||
+      promptLower.includes('daily') ||
+      promptLower.includes('hourly') ||
+      promptLower.includes('every hour') ||
+      promptLower.includes('cron');
     const isEmail = promptLower.includes('email') || promptLower.includes('gmail');
     const isWebhook = promptLower.includes('webhook') || promptLower.includes('stripe') || promptLower.includes('order');
+    const isHealthCheck =
+      (promptLower.includes('health') || promptLower.includes('ping') || promptLower.includes('uptime') || promptLower.includes('http status')) &&
+      (promptLower.includes('http') || promptLower.includes('api') || promptLower.includes('endpoint'));
 
     let triggerType: 'webhook' | 'schedule' | 'email' | 'manual' = 'webhook';
     if (isScheduled) triggerType = 'schedule';
@@ -42,13 +53,15 @@ export class MockAiProvider implements AiProvider {
 
     const integrations: string[] = [];
     if (isEmail) integrations.push('gmail');
+    if (promptLower.includes('http') || promptLower.includes('api') || isHealthCheck) integrations.push('httpRequest');
     if (promptLower.includes('slack')) integrations.push('slack');
-    if (promptLower.includes('http') || promptLower.includes('api')) integrations.push('httpRequest');
     if (integrations.length === 0) integrations.push('slack');
 
     const clarifications = [];
-    // Ask clarification if trigger details are ambiguous and no previous answer was provided
-    if (triggerType === 'schedule' && !options?.previousClarifications?.q_schedule_freq) {
+    // Ask clarification if trigger details are ambiguous and no frequency was specified in prompt or previous answer
+    const specifiesHourly = promptLower.includes('every hour') || promptLower.includes('hourly');
+    const specifiesDaily = promptLower.includes('every day') || promptLower.includes('daily');
+    if (triggerType === 'schedule' && !specifiesHourly && !specifiesDaily && !options?.previousClarifications?.q_schedule_freq) {
       clarifications.push({
         id: 'q_schedule_freq',
         question: 'How often should this scheduled automation run?',
@@ -65,34 +78,51 @@ export class MockAiProvider implements AiProvider {
         id: 'q_slack_channel',
         question: 'Which Slack channel should receive the notification message?',
         context: 'Used to configure the target channel ID in the Slack node.',
-        options: ['#alerts', '#notifications', '#general'],
-        defaultAnswer: '#alerts',
+        options: isHealthCheck ? ['#api-status', '#alerts', '#general'] : ['#alerts', '#notifications', '#general'],
+        defaultAnswer: isHealthCheck ? '#api-status' : '#alerts',
         isEssential: false,
         category: 'output' as const,
       });
     }
 
+    const title = isHealthCheck
+      ? 'Hourly API Health Check & Alert'
+      : isEmail
+      ? 'Customer Support Email Classifier & Alert'
+      : isScheduled
+      ? 'Scheduled Data Ingestion and Alert Pipeline'
+      : 'Webhook Event Notification Workflow';
+
+    const scheduleInterval = isScheduled
+      ? (options?.previousClarifications?.q_schedule_freq || (specifiesHourly ? 'Every hour' : specifiesDaily ? 'Every day at 9:00 AM' : 'Every hour'))
+      : undefined;
+
+    const dataProcessingSteps = isHealthCheck
+      ? [
+          'Trigger on scheduled hourly interval',
+          'Make HTTP GET request to configurable API health endpoint with timeout and error handling',
+          'Evaluate HTTP response status code (2xx operational vs failure/timeout)',
+          'Send concise success or failure report to Slack',
+        ]
+      : [
+          `Receive incoming data via ${triggerType}`,
+          hasAiMention ? 'Analyze and categorize payload using AI' : 'Validate payload fields and format data',
+          'Check priority or condition rules',
+          `Send notification or update via ${integrations.join(' and ')}`,
+        ];
+
     const requirementData: RequirementSpecification = {
-      title: isEmail
-        ? 'Customer Support Email Classifier & Alert'
-        : isScheduled
-        ? 'Scheduled Data Ingestion and Alert Pipeline'
-        : 'Webhook Event Notification Workflow',
+      title,
       userGoal: userPrompt.trim(),
       triggerType,
       triggerDetails: {
-        scheduleInterval: isScheduled ? (options?.previousClarifications?.q_schedule_freq || 'Every hour') : undefined,
+        scheduleInterval,
         webhookMethod: 'POST',
         sourceApp: isEmail ? 'Gmail' : isScheduled ? 'Schedule' : 'External Webhook',
       },
-      dataProcessingSteps: [
-        `Receive incoming data via ${triggerType}`,
-        hasAiMention ? 'Analyze and categorize payload using AI' : 'Validate payload fields and format data',
-        'Check priority or condition rules',
-        `Send notification or update via ${integrations.join(' and ')}`,
-      ],
-      hasAiAgent: hasAiMention,
-      aiAgentTask: hasAiMention
+      dataProcessingSteps,
+      hasAiAgent: isHealthCheck ? false : hasAiMention,
+      aiAgentTask: hasAiMention && !isHealthCheck
         ? 'Analyze input text, determine urgency (high/medium/low), and summarize key points'
         : undefined,
       integrations,
@@ -113,6 +143,230 @@ export class MockAiProvider implements AiProvider {
     const targetVersion = options?.targetN8nVersion || '1.70.0';
     const nodes = [];
     const connections = [];
+
+    // Check if this is an API Health Check / Scheduled HTTP Monitoring workflow
+    const isHealthCheckWorkflow =
+      requirement.title.includes('Health Check') ||
+      (requirement.triggerType === 'schedule' &&
+        requirement.integrations.includes('httpRequest') &&
+        requirement.integrations.includes('slack'));
+
+    if (isHealthCheckWorkflow) {
+      const scheduleDef = VERIFIED_N8N_NODES['n8n-nodes-base.scheduleTrigger'];
+      const httpDef = VERIFIED_N8N_NODES['n8n-nodes-base.httpRequest'];
+      const ifDef = VERIFIED_N8N_NODES['n8n-nodes-base.if'];
+      const slackDef = VERIFIED_N8N_NODES['n8n-nodes-base.slack'];
+
+      // Node 1: Schedule Trigger (hourly)
+      nodes.push({
+        id: 'node_trigger',
+        name: 'Schedule Trigger',
+        type: scheduleDef.nodeType,
+        typeVersion: scheduleDef.defaultVersion,
+        parameters: {
+          rule: {
+            interval: [
+              {
+                field: 'hours',
+                hoursInterval: 1,
+              },
+            ],
+          },
+        },
+        notes: 'Fires hourly to ping the API health endpoint',
+        disabled: false,
+      });
+
+      // Node 2: HTTP Request to configurable health check endpoint
+      nodes.push({
+        id: 'node_http_health_check',
+        name: 'API Health Check',
+        type: httpDef.nodeType,
+        typeVersion: httpDef.defaultVersion,
+        parameters: {
+          method: 'GET',
+          url: 'https://api.example.com/health',
+          authentication: 'none',
+          options: {
+            timeout: 10000,
+            response: {
+              response: {
+                fullResponse: true,
+                neverError: true,
+              },
+            },
+          },
+        },
+        notes: 'Pings configurable API health endpoint; catches timeouts and request errors without exposing secrets',
+        disabled: false,
+      });
+
+      // Node 3: Evaluate HTTP Status
+      nodes.push({
+        id: 'node_if_status',
+        name: 'Check If HTTP Status OK',
+        type: ifDef.nodeType,
+        typeVersion: ifDef.defaultVersion,
+        parameters: {
+          conditions: {
+            options: {
+              caseSensitive: false,
+              leftValue: '',
+              typeValidation: 'strict',
+            },
+            conditions: [
+              {
+                leftValue: '={{ $json.statusCode }}',
+                rightValue: 200,
+                operator: {
+                  type: 'number',
+                  operation: 'gte',
+                },
+              },
+              {
+                leftValue: '={{ $json.statusCode }}',
+                rightValue: 300,
+                operator: {
+                  type: 'number',
+                  operation: 'lt',
+                },
+              },
+            ],
+            combinator: 'and',
+          },
+        },
+        notes: 'Evaluates HTTP response status code: 2xx (200-299) indicates operational; non-2xx or connection error indicates failure',
+        disabled: false,
+      });
+
+      // Node 4: Send Success Report to Slack (Output 0 = True)
+      nodes.push({
+        id: 'node_slack_success',
+        name: 'Send Success Report to Slack',
+        type: slackDef.nodeType,
+        typeVersion: slackDef.defaultVersion,
+        parameters: {
+          resource: 'message',
+          operation: 'post',
+          select: 'channel',
+          channelId: {
+            __rl: true,
+            value: options?.previousClarifications?.q_slack_channel || '#api-status',
+            mode: 'name',
+          },
+          text: `*[✅ API Health Check: Operational]*\n• *Endpoint:* ={{ $('API Health Check').item.json.url || 'https://api.example.com/health' }}\n• *Status Code:* ={{ $json.statusCode }}\n• *Response Time:* ={{ $json.responseTime ? $json.responseTime + 'ms' : '<500ms' }}\n• *Timestamp:* ={{ $now.toISO() }}\n• *Status:* All systems operational.`,
+        },
+        credentials: {
+          slackApi: '[CONFIGURE_CREDENTIAL: slackApi]',
+        },
+        notes: 'Sends concise success report to Slack when API health check returns HTTP 2xx',
+        disabled: false,
+      });
+
+      // Node 5: Send Failure Report to Slack (Output 1 = False)
+      nodes.push({
+        id: 'node_slack_failure',
+        name: 'Send Failure Report to Slack',
+        type: slackDef.nodeType,
+        typeVersion: slackDef.defaultVersion,
+        parameters: {
+          resource: 'message',
+          operation: 'post',
+          select: 'channel',
+          channelId: {
+            __rl: true,
+            value: options?.previousClarifications?.q_slack_channel || '#api-alerts',
+            mode: 'name',
+          },
+          text: `*[🚨 API Health Check: Failure / Outage Detected]*\n• *Endpoint:* ={{ $('API Health Check').item?.json?.url || 'https://api.example.com/health' }}\n• *Status Code:* ={{ $json.statusCode || 'TIMEOUT / CONNECTION ERROR' }}\n• *Error Details:* ={{ $json.error?.message || $json.message || 'Endpoint timed out or returned non-2xx status code' }}\n• *Timestamp:* ={{ $now.toISO() }}\n• *Action Required:* On-call engineer please investigate endpoint immediately.\n• *Security:* No secrets, authentication headers, or credentials exposed.`,
+        },
+        credentials: {
+          slackApi: '[CONFIGURE_CREDENTIAL: slackApi]',
+        },
+        notes: 'Sends failure report to Slack if API endpoint is down, times out, or returns an error',
+        disabled: false,
+      });
+
+      connections.push(
+        {
+          fromNodeId: 'node_trigger',
+          fromOutputIndex: 0,
+          fromOutputType: 'main' as const,
+          toNodeId: 'node_http_health_check',
+          toInputIndex: 0,
+          toInputType: 'main' as const,
+        },
+        {
+          fromNodeId: 'node_http_health_check',
+          fromOutputIndex: 0,
+          fromOutputType: 'main' as const,
+          toNodeId: 'node_if_status',
+          toInputIndex: 0,
+          toInputType: 'main' as const,
+        },
+        {
+          fromNodeId: 'node_if_status',
+          fromOutputIndex: 0, // Output 0 = True
+          fromOutputType: 'main' as const,
+          toNodeId: 'node_slack_success',
+          toInputIndex: 0,
+          toInputType: 'main' as const,
+        },
+        {
+          fromNodeId: 'node_if_status',
+          fromOutputIndex: 1, // Output 1 = False
+          fromOutputType: 'main' as const,
+          toNodeId: 'node_slack_failure',
+          toInputIndex: 0,
+          toInputType: 'main' as const,
+        }
+      );
+
+      const now = new Date().toISOString();
+      const blueprintData: WorkflowBlueprint = {
+        id: `bp_${Date.now()}`,
+        name: requirement.title,
+        description: requirement.userGoal,
+        targetN8nVersion: targetVersion,
+        assumptions: [
+          `Targeting n8n baseline version ${targetVersion}`,
+          'Schedule Trigger executes hourly at the top of the hour',
+          'API Health Check node issues an HTTP GET to the configured health endpoint',
+          'Request timeouts (10s) and network connection errors are gracefully caught without terminating the workflow',
+          'Check If HTTP Status OK routes status codes 200-299 to the success Slack report',
+          'Non-2xx status codes, timeouts, and network connection errors route to the failure Slack alert',
+          'No sensitive API keys, headers, or secrets are exposed in notification payloads',
+          'Slack credentials to be configured in user n8n instance via credential placeholders',
+        ],
+        unresolvedIssues: [
+          'User must configure the target API health endpoint URL in the API Health Check node',
+          'User must provide valid Slack bot token credentials in n8n credential store',
+          'Target Slack channels (#api-status, #api-alerts) must exist in your workspace',
+        ],
+        expectedOutputs: [
+          'Concise operational success report posted to Slack on HTTP 2xx',
+          'High-visibility failure notification posted to Slack on timeout or non-2xx status',
+          'Validated n8n workflow JSON ready for manual import',
+          'Optimized prompt for manual AI refinement',
+        ],
+        nodes,
+        connections,
+        metadata: {
+          createdAt: now,
+          updatedAt: now,
+          targetN8nVersion: targetVersion,
+          complexityLevel: 'simple',
+          estimatedAiCallsPerRun: 0,
+          tags: ['schedule', 'httpRequest', 'slack'],
+          version: '1.0.0',
+          author: 'AI n8n Workflow Builder (Mock Provider)',
+        },
+      };
+
+      const blueprint = WorkflowBlueprintSchema.parse(blueprintData);
+      const metrics = this.createMetrics(JSON.stringify(requirement).length, JSON.stringify(blueprint).length);
+      return { blueprint, metrics };
+    }
 
     // 1. Trigger node
     if (requirement.triggerType === 'email') {

@@ -226,6 +226,8 @@ export function validateWorkflowBlueprint(
       goalLower.includes('if high priority') ||
       goalLower.includes('if priority') ||
       goalLower.includes('if sentiment') ||
+      goalLower.includes('evaluate the http status') ||
+      goalLower.includes('success or failure') ||
       goalLower.includes('classify its sentiment and urgency, then notify');
 
     if (requiresBranch) {
