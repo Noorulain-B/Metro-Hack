@@ -41,13 +41,14 @@ export const STARTER_TEMPLATES: WorkflowTemplate[] = [
   {
     id: 'tpl_scheduled_health_check',
     title: 'Hourly API Health Check & Alert',
-    description: 'Runs on a recurring schedule to ping external REST API endpoints and triggers an alert if unexpected response status is returned.',
+    description: 'Runs on a recurring schedule to ping external REST API endpoints, evaluate HTTP response status, and route to success or failure Slack alerts.',
     category: 'scheduled',
-    userPrompt: 'Every hour on schedule, make an HTTP GET request to check API status and post results to Slack.',
-    tags: ['Schedule', 'HTTP Request', 'Monitoring', 'Slack'],
+    userPrompt: 'Every hour, check a configurable API health endpoint with HTTP GET. Send a success report to Slack for healthy responses and a failure alert for unsuccessful responses or request errors. Never include secrets in notifications.',
+    tags: ['Schedule', 'HTTP Request', 'If Condition', 'Slack'],
     nodeTypes: [
       'n8n-nodes-base.scheduleTrigger',
       'n8n-nodes-base.httpRequest',
+      'n8n-nodes-base.if',
       'n8n-nodes-base.slack',
     ],
   },

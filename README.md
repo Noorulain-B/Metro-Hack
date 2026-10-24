@@ -463,19 +463,19 @@ Node specifications and connection conventions are cross-referenced directly fro
 
 ---
 
-## 9. AI Provider Architecture & Mock Engine
+## 9. AI Provider Architecture & Resilient Multi-Tier Fallback
 
-The application isolates AI logic behind a unified interface (`AiProvider` in `src/lib/ai/types.ts`):
+The application isolates AI generation behind a unified interface (`AiProvider` in `src/lib/ai/types.ts`):
 
 ```typescript
 export interface AiProvider {
-  analyzeRequirement(prompt: string): Promise<{
+  analyzeRequirement(prompt: string, options?: AiGenerationOptions): Promise<{
     requirement: RequirementSpecification;
     metrics: AiUsageMetrics;
   }>;
   generateBlueprint(
     requirement: RequirementSpecification,
-    options?: { targetN8nVersion?: string }
+    options?: AiGenerationOptions
   ): Promise<{
     blueprint: WorkflowBlueprint;
     metrics: AiUsageMetrics;
@@ -483,10 +483,16 @@ export interface AiProvider {
 }
 ```
 
+### Resilient Multi-Tier Fallback (`src/lib/ai/fallback-provider.ts`)
+To guarantee 100% demo uptime and eliminate single points of failure during hackathon demonstrations:
+1. **Tier 1 — OpenAI (GPT-4o-mini)**: If `OPENAI_API_KEY` is configured, requests are sent via structured JSON mode to OpenAI for live generation.
+2. **Tier 2 — Google Gemini (Gemini 2.5 Flash)**: If OpenAI fails, rate-limits (HTTP 429), or exhausts quota, the system automatically cascades to Gemini (if `GEMINI_API_KEY` is configured).
+3. **Tier 3 — Deterministic Local Mock Engine**: If both cloud providers fail, are unconfigured, or encounter network timeouts, the engine immediately cascades to the local deterministic engine. **The demo will never crash or throw an unhandled 500 error.**
+
 ### Deterministic Mock Engine (`src/lib/ai/mock-provider.ts`)
-- **Default Mode**: Used automatically when no `GEMINI_API_KEY` is provided, and forced during automated testing.
-- **$0 Spend**: Requires no API keys, makes no network calls, and reports `estimatedCostUsd: 0`.
-- **Deterministic Routing**: Contains specialized pattern matchers for email triage, schedule automations, Google Sheets operations, and Webhook dispatchers.
+- **Default Mode**: Used automatically when no API keys are provided, and strictly enforced during automated tests (`npm test`).
+- **$0 Spend Guarantee**: Requires zero API keys, makes no external network calls, and reports `estimatedCostUsd: 0`.
+- **Deterministic Routing**: Contains verified pattern matchers for email triage, schedule health checks, Google Sheets, and webhook dispatchers.
 - **Gmail Support Triage Pipeline**: Implements the complete 9-node workflow:
   1. `Gmail Trigger` (`n8n-nodes-base.gmailTrigger`)
   2. `Format Input Data` (`n8n-nodes-base.set`)
@@ -500,28 +506,27 @@ export interface AiProvider {
 
 ---
 
-## 10. Google Gemini Integration Configuration
+## 10. OpenAI & Google Gemini Configuration
 
-The application includes an implementation for **Google Gemini 2.5 Flash** using the official `@google/genai` SDK in `src/lib/ai/gemini-provider.ts`.
-
-### Setup Instructions (Optional)
-1. Obtain an API key from Google AI Studio.
-2. Create a `.env.local` file in the project root:
+### Setup Instructions for Live AI
+1. Open or create `.env.local` in the project root:
    ```bash
    cp .env.example .env.local
    ```
-3. Set your API key in `.env.local`:
+2. Add your OpenAI API key (and optionally your Gemini API key for dual-cloud fallback):
    ```env
-   GEMINI_API_KEY=your_actual_api_key_here
+   # OpenAI Key for live generation (Recommended for Hackathon)
+   OPENAI_API_KEY=sk-proj-your_actual_key_here
+   OPENAI_MODEL=gpt-4o-mini
+
+   # Optional: Google Gemini key for multi-tier backup
+   GEMINI_API_KEY=your_gemini_key_here
    ```
-4. Restart the local development server:
-   ```bash
-   npm run dev
-   ```
-5. In the UI TopBar or Sidebar, switch the AI Provider dropdown from **"Local Mock ($0 Spend)"** to **"Google Gemini"**.
+3. The Next.js dev server automatically reloads `.env.local`.
+4. In the UI TopBar or prompt header, select **"OpenAI (GPT-4o-mini + Resilient Fallback)"** from the provider dropdown.
 
 > [!NOTE]
-> During this audit and for automated testing, the application remains strictly in **Local Mock Mode**. No paid API requests are made. If `GEMINI_API_KEY` is omitted, the factory safely falls back to the deterministic mock engine.
+> During automated testing (`npm test`), the application strictly forces **Local Mock Mode** ($0 spend). No external API calls are ever made during test execution.
 
 ---
 
@@ -650,7 +655,11 @@ Documented in `.env.example`:
 
 | Variable | Required? | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `GEMINI_API_KEY` | Optional | *(None)* | Google Gemini API key from Google AI Studio. If omitted, the app operates 100% in local Mock AI mode. |
+| `OPENAI_API_KEY` | Optional | *(None)* | OpenAI API key (e.g. `sk-proj-...`). Enables live GPT-4o-mini generation. |
+| `OPENAI_MODEL` | Optional | `gpt-4o-mini` | OpenAI model identifier (e.g. `gpt-4o-mini` or `gpt-4o`). |
+| `GEMINI_API_KEY` | Optional | *(None)* | Google Gemini API key from Google AI Studio. Used for Tier 2 fallback. |
+
+*(Note: If all API keys are omitted, the application runs 100% in local Mock AI mode with $0 spend and zero dependencies on external services).*
 
 ---
 

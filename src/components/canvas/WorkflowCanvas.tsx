@@ -74,6 +74,10 @@ export function WorkflowCanvas({ blueprint, selectedNodeId, onSelectNode }: Work
     if (node.id === 'node_if_urgency') return { x: 1080, y: 80 };
     if (node.id === 'node_slack_high_priority') return { x: 1340, y: 20 };
     if (node.id === 'node_slack_normal_priority') return { x: 1340, y: 170 };
+    if (node.id === 'node_http_health_check') return { x: 300, y: 160 };
+    if (node.id === 'node_if_status') return { x: 580, y: 160 };
+    if (node.id === 'node_slack_success') return { x: 860, y: 80 };
+    if (node.id === 'node_slack_failure') return { x: 860, y: 260 };
 
     // Default horizontal layout fallback
     return { x: 40 + index * 260, y: 160 };

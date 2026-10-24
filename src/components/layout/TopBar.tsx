@@ -5,7 +5,7 @@ import { WorkflowBlueprint } from '@/lib/schemas/blueprint';
 
 interface TopBarProps {
   blueprint: WorkflowBlueprint | null;
-  provider: 'mock' | 'gemini';
+  provider: 'mock' | 'gemini' | 'openai' | 'fallback';
   targetN8nVersion: string;
   isSaved: boolean;
   copiedType: 'json' | 'prompt' | null;
@@ -116,7 +116,13 @@ export function TopBar({
               backgroundColor: provider === 'mock' ? '#34d399' : '#38bdf8',
             }}
           />
-          {provider === 'mock' ? 'Local Mock Engine ($0 Free)' : 'Gemini AI Pro'}
+          {provider === 'mock'
+            ? 'Local Mock Engine ($0 Free)'
+            : provider === 'openai'
+            ? 'OpenAI (GPT-4o-mini + Fallback)'
+            : provider === 'fallback'
+            ? 'Resilient Multi-Tier AI'
+            : 'Gemini AI Pro'}
         </span>
       </div>
 

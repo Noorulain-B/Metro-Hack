@@ -28,7 +28,7 @@ export interface AiGenerationOptions {
  * Implemented by MockAiProvider (for $0 tests and dry runs) and GeminiAiProvider.
  */
 export interface AiProvider {
-  readonly providerId: 'mock' | 'gemini' | 'openai';
+  readonly providerId: 'mock' | 'gemini' | 'openai' | 'fallback';
 
   /**
    * Analyzes a natural-language prompt into structured requirements and clarifications.

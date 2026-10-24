@@ -21,7 +21,7 @@ import { RegistryModal } from '@/components/modals/RegistryModal';
 export default function WorkflowBuilderPage() {
   // Input & Configuration state
   const [prompt, setPrompt] = useState<string>('');
-  const [provider, setProvider] = useState<'mock' | 'gemini'>('mock');
+  const [provider, setProvider] = useState<'mock' | 'gemini' | 'openai' | 'fallback'>('mock');
   const [targetN8nVersion, setTargetN8nVersion] = useState<string>('1.70.0');
 
   // Execution flow state
@@ -346,11 +346,12 @@ export default function WorkflowBuilderPage() {
                   <select
                     id="provider-select"
                     value={provider}
-                    onChange={(e) => setProvider(e.target.value as 'mock' | 'gemini')}
+                    onChange={(e) => setProvider(e.target.value as 'mock' | 'gemini' | 'openai' | 'fallback')}
                     className="select-input"
                     style={{ fontSize: '0.72rem', padding: '3px 8px' }}
                   >
-                    <option value="mock">Mock Engine ($0 Free)</option>
+                    <option value="mock">Local Mock Engine ($0 Free)</option>
+                    <option value="openai">OpenAI (GPT-4o-mini + Resilient Fallback)</option>
                     <option value="gemini">Google Gemini AI Pro</option>
                   </select>
                 </div>
@@ -729,9 +730,95 @@ export default function WorkflowBuilderPage() {
                         </span>
                       </div>
                       <span className="badge badge-neutral" style={{ fontSize: '0.64rem' }}>
-                        0 Blocking Errors · {validationReport.warnings.length} Warnings
+                        {validationReport.errors.length} Blocking Error{validationReport.errors.length === 1 ? '' : 's'} · {validationReport.warnings.length} Warning{validationReport.warnings.length === 1 ? '' : 's'}
                       </span>
                     </div>
+
+                    {/* Critical Errors List */}
+                    {validationReport.errors.length > 0 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#fb7185' }}>
+                          BLOCKING VALIDATION ERRORS ({validationReport.errors.length})
+                        </div>
+                        {validationReport.errors.map((err, i) => (
+                          <div
+                            key={i}
+                            style={{
+                              padding: '8px 12px',
+                              borderRadius: 'var(--radius-sm)',
+                              backgroundColor: 'rgba(244, 63, 94, 0.08)',
+                              border: '1px solid rgba(244, 63, 94, 0.25)',
+                              fontSize: '0.74rem',
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
+                              <span className="badge badge-error" style={{ fontSize: '0.62rem' }}>
+                                {err.code}
+                              </span>
+                              {err.nodeName && <span style={{ fontWeight: 600, color: '#ffffff' }}>[{err.nodeName}]</span>}
+                              <span style={{ color: '#fb7185' }}>{err.message}</span>
+                            </div>
+                            {err.suggestedCorrection && (
+                              <div style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', marginTop: '2px' }}>
+                                💡 Suggested fix: {err.suggestedCorrection}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Warnings List */}
+                    {validationReport.warnings.length > 0 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#fbbf24' }}>
+                          WARNINGS ({validationReport.warnings.length})
+                        </div>
+                        {validationReport.warnings.map((warn, i) => (
+                          <div
+                            key={i}
+                            style={{
+                              padding: '8px 12px',
+                              borderRadius: 'var(--radius-sm)',
+                              backgroundColor: 'rgba(245, 158, 11, 0.08)',
+                              border: '1px solid rgba(245, 158, 11, 0.25)',
+                              fontSize: '0.74rem',
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
+                              <span className="badge badge-warning" style={{ fontSize: '0.62rem' }}>
+                                {warn.code}
+                              </span>
+                              {warn.nodeName && <span style={{ fontWeight: 600, color: '#ffffff' }}>[{warn.nodeName}]</span>}
+                              <span style={{ color: '#fbbf24' }}>{warn.message}</span>
+                            </div>
+                            {warn.suggestedCorrection && (
+                              <div style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', marginTop: '2px' }}>
+                                💡 Suggested fix: {warn.suggestedCorrection}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Clean Pass Badges */}
+                    {validationReport.errors.length === 0 && validationReport.warnings.length === 0 && (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '8px' }}>
+                        <div style={{ backgroundColor: 'var(--bg-surface-subtle)', padding: '8px 12px', borderRadius: 'var(--radius-sm)', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                          <span style={{ color: '#34d399', fontWeight: 700 }}>✓ Verified Nodes</span>: Zero unknown or hallucinated node types.
+                        </div>
+                        <div style={{ backgroundColor: 'var(--bg-surface-subtle)', padding: '8px 12px', borderRadius: 'var(--radius-sm)', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                          <span style={{ color: '#34d399', fontWeight: 700 }}>✓ Parameter Integrity</span>: All required parameters present and typed.
+                        </div>
+                        <div style={{ backgroundColor: 'var(--bg-surface-subtle)', padding: '8px 12px', borderRadius: 'var(--radius-sm)', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                          <span style={{ color: '#34d399', fontWeight: 700 }}>✓ Sockets & Connections</span>: All branch indexes and targets match nodes.
+                        </div>
+                        <div style={{ backgroundColor: 'var(--bg-surface-subtle)', padding: '8px 12px', borderRadius: 'var(--radius-sm)', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                          <span style={{ color: '#34d399', fontWeight: 700 }}>✓ Credential Hygiene</span>: No raw API keys, passwords, or tokens in export.
+                        </div>
+                      </div>
+                    )}
 
                     {/* Disclaimers: Checks Not Performed */}
                     <div style={{ backgroundColor: 'var(--bg-surface-subtle)', padding: '10px 14px', borderRadius: 'var(--radius-sm)' }}>

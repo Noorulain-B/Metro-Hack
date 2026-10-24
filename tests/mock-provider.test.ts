@@ -62,5 +62,22 @@ describe('Mock AI Provider ($0 Spend & Deterministic Engine)', () => {
   test('getAiProvider defaults to MockAiProvider in test environment', () => {
     const resolvedProvider = getAiProvider();
     assert.equal(resolvedProvider.providerId, 'mock');
+    const resolvedOpenAi = getAiProvider('openai');
+    assert.equal(resolvedOpenAi.providerId, 'mock', 'Must enforce mock provider in test environment for $0 cost');
+  });
+
+  test('ResilientFallbackAiProvider gracefully falls back to mock engine without throwing', async () => {
+    const { ResilientFallbackAiProvider } = await import('../src/lib/ai/fallback-provider');
+    const fallbackProvider = new ResilientFallbackAiProvider();
+    assert.equal(fallbackProvider.providerId, 'fallback');
+
+    const result = await fallbackProvider.analyzeRequirement('Create a webhook automation that alerts Slack');
+    assert.ok(result.requirement);
+    assert.ok(result.metrics);
+    assert.ok(result.metrics.modelName.includes('fallback') || result.metrics.isMock);
+
+    const bpResult = await fallbackProvider.generateBlueprint(result.requirement);
+    assert.ok(bpResult.blueprint);
+    assert.ok(bpResult.blueprint.nodes.length > 0);
   });
 });
