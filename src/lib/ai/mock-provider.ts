@@ -128,19 +128,22 @@ export class MockAiProvider implements AiProvider {
       });
     } else {
       const webhookDef = VERIFIED_N8N_NODES['n8n-nodes-base.webhook'];
+      const isEmailTrigger = requirement.triggerType === 'email';
       nodes.push({
         id: 'node_trigger',
-        name: 'Webhook Trigger',
+        name: isEmailTrigger ? 'Inbound Email Webhook' : 'Webhook Trigger',
         type: webhookDef.nodeType,
         typeVersion: webhookDef.defaultVersion,
         parameters: {
           httpMethod: requirement.triggerDetails.webhookMethod || 'POST',
-          path: 'webhook-listener',
+          path: isEmailTrigger ? 'email-inbound' : 'webhook-listener',
           responseMode: 'onReceived',
           responseData: 'allEntries',
           options: {},
         },
-        notes: 'Listens for incoming HTTP POST events',
+        notes: isEmailTrigger
+          ? 'Receives incoming customer email webhook payloads (e.g. from SendGrid, Postmark, or Mailgun)'
+          : 'Listens for incoming HTTP POST events',
         disabled: false,
       });
     }
@@ -240,7 +243,44 @@ export class MockAiProvider implements AiProvider {
     }
 
     // 4. Action node (Slack / Gmail / HTTP)
-    if (requirement.integrations.includes('gmail')) {
+    const wantsSlack =
+      requirement.integrations.includes('slack') ||
+      requirement.userGoal.toLowerCase().includes('slack');
+
+    if (wantsSlack) {
+      const slackDef = VERIFIED_N8N_NODES['n8n-nodes-base.slack'];
+      nodes.push({
+        id: 'node_slack_alert',
+        name: 'Send Slack Notification',
+        type: slackDef.nodeType,
+        typeVersion: slackDef.defaultVersion,
+        parameters: {
+          resource: 'message',
+          operation: 'post',
+          select: 'channel',
+          channelId: {
+            __rl: true,
+            value: options?.previousClarifications?.q_slack_channel || '#support',
+            mode: 'name',
+          },
+          text: `*[Customer Support Alert]*\nUrgency: ={{ $json.output || "High" }}\nSummary: ={{ $json.rawPayload || "New support request received" }}`,
+        },
+        credentials: {
+          slackApi: '[CONFIGURE_CREDENTIAL: slackApi]',
+        },
+        notes: 'Posts a formatted status message to Slack',
+        disabled: false,
+      });
+
+      connections.push({
+        fromNodeId: previousNodeId,
+        fromOutputIndex: 0,
+        fromOutputType: 'main' as const,
+        toNodeId: 'node_slack_alert',
+        toInputIndex: 0,
+        toInputType: 'main' as const,
+      });
+    } else if (requirement.integrations.includes('gmail')) {
       const gmailDef = VERIFIED_N8N_NODES['n8n-nodes-base.gmail'];
       nodes.push({
         id: 'node_gmail_send',

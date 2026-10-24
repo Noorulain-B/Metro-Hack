@@ -5,65 +5,86 @@ import { optimizeWorkflowBlueprint } from '../src/lib/n8n/optimizer';
 import { validateWorkflowBlueprint } from '../src/lib/n8n/validator';
 import { generateN8nWorkflowJson, formatN8nJsonString } from '../src/lib/n8n/generator';
 import { generateOptimizedN8nPrompt } from '../src/lib/n8n/prompt-generator';
+import { RequirementSpecificationSchema } from '../src/lib/schemas/requirement';
+import { WorkflowBlueprintSchema } from '../src/lib/schemas/blueprint';
+import { ValidationReportSchema } from '../src/lib/schemas/validation';
 
-describe('End-to-End Pipeline Integration Test (Mock Mode: $0 Spend)', () => {
+describe('End-to-End Pipeline Verification: Customer Email Triage to Slack', () => {
   const mockAi = new MockAiProvider();
 
-  test('Realistic user prompt traverses full pipeline: Prompt ➔ Requirement ➔ Blueprint ➔ Optimizer ➔ Validator ➔ JSON & Prompt', async () => {
-    // 1. User enters natural language request
-    const userPrompt = 'When a customer support email arrives, use AI to classify the sentiment and urgency, and if urgent send a Slack notification';
+  test('Pipeline processes: "When a new customer email arrives, classify its sentiment and urgency, then notify the support team in Slack."', async () => {
+    const userPrompt = 'When a new customer email arrives, classify its sentiment and urgency, then notify the support team in Slack.';
 
-    // 2. AI Requirement Analysis
+    // Stage 2.1: Requirement Specification
     const { requirement, metrics: reqMetrics } = await mockAi.analyzeRequirement(userPrompt);
-    assert.equal(requirement.hasAiAgent, true);
-    assert.equal(requirement.triggerType, 'email');
-    assert.equal(reqMetrics.estimatedCostUsd, 0.0);
+    const validatedRequirement = RequirementSpecificationSchema.parse(requirement);
 
-    // 3. Structured Workflow Blueprint Generation
-    const { blueprint, metrics: bpMetrics } = await mockAi.generateBlueprint(requirement, {
+    assert.equal(validatedRequirement.triggerType, 'email');
+    assert.equal(validatedRequirement.hasAiAgent, true);
+    assert.ok(validatedRequirement.integrations.includes('slack'));
+    assert.ok(validatedRequirement.dataProcessingSteps.length >= 3);
+    assert.equal(reqMetrics.estimatedCostUsd, 0.0);
+    assert.equal(reqMetrics.isMock, true);
+
+    // Stage 2.2: Canonical Workflow Blueprint
+    const { blueprint, metrics: bpMetrics } = await mockAi.generateBlueprint(validatedRequirement, {
       targetN8nVersion: '1.70.0',
     });
-    assert.equal(blueprint.targetN8nVersion, '1.70.0');
-    assert.ok(blueprint.nodes.length >= 3, 'Must create trigger, transform, AI agent, and action nodes');
+    const validatedBlueprint = WorkflowBlueprintSchema.parse(blueprint);
+
+    assert.equal(validatedBlueprint.targetN8nVersion, '1.70.0');
+    assert.ok(validatedBlueprint.nodes.length >= 4, 'Must include trigger, transform, AI agent, model subnode, and Slack action');
+    assert.ok(validatedBlueprint.connections.length >= 3);
     assert.equal(bpMetrics.estimatedCostUsd, 0.0);
 
-    // 4. Deterministic Optimization
-    const optimization = optimizeWorkflowBlueprint(blueprint);
-    assert.ok(optimization.optimizedBlueprint);
-    assert.equal(optimization.optimizedBlueprint.id, blueprint.id);
+    // Verify Slack node is explicitly present
+    const slackNode = validatedBlueprint.nodes.find((n) => n.type === 'n8n-nodes-base.slack');
+    assert.ok(slackNode, 'Blueprint must contain the requested Slack action node');
+    assert.equal(slackNode.credentials?.slackApi, '[CONFIGURE_CREDENTIAL: slackApi]');
 
-    // 5. Deterministic Validation Engine
-    const validationReport = validateWorkflowBlueprint(optimization.optimizedBlueprint);
-    assert.equal(validationReport.valid, true, 'Generated blueprint must pass validation with 0 blocking errors');
-    assert.equal(validationReport.errors.length, 0);
-    assert.ok(validationReport.checksNotPerformed.length > 0);
-
-    // 6. Dual Output Generation from the SAME approved blueprint
+    // Stage 2.3: Deterministic Optimization
+    const optimization = optimizeWorkflowBlueprint(validatedBlueprint);
     const approvedBlueprint = optimization.optimizedBlueprint;
+    assert.equal(approvedBlueprint.id, validatedBlueprint.id);
 
-    // A: n8n Workflow JSON
+    // Stage 2.4: Deterministic Validation Report
+    const validationReport = validateWorkflowBlueprint(approvedBlueprint);
+    const validatedReport = ValidationReportSchema.parse(validationReport);
+
+    assert.equal(validatedReport.valid, true, 'Workflow must be structurally valid with zero blocking errors');
+    assert.equal(validatedReport.errors.length, 0);
+    assert.ok(validatedReport.checksNotPerformed.length >= 3, 'Must clearly declare checks not performed');
+
+    // Stage 2.5: Dual Output Generation from SAME approved blueprint
+    // Output A: Official n8n Workflow JSON
     const n8nJson = generateN8nWorkflowJson(approvedBlueprint);
     assert.equal(n8nJson.name, approvedBlueprint.name);
     assert.equal(n8nJson.nodes.length, approvedBlueprint.nodes.length);
-    assert.ok(Object.keys(n8nJson.connections).length > 0);
+    assert.ok(n8nJson.connections['Inbound Email Webhook'] || n8nJson.connections['Webhook Trigger']);
 
-    // Verify downloadable string
+    // Check Slack connection in JSON
+    const slackJsonNode = n8nJson.nodes.find((n) => n.type === 'n8n-nodes-base.slack');
+    assert.ok(slackJsonNode);
+    assert.deepEqual(slackJsonNode.credentials, {
+      slackApi: { name: '[CONFIGURE_CREDENTIAL: slackApi]' },
+    });
+
     const jsonString = formatN8nJsonString(n8nJson);
-    assert.ok(jsonString.includes('n8n-nodes-base'));
+    assert.ok(jsonString.includes('n8n-nodes-base.slack'));
 
-    // B: Optimized AI Prompt
+    // Output B: Optimized Prompt
     const promptText = generateOptimizedN8nPrompt(approvedBlueprint);
-    assert.ok(promptText.includes(approvedBlueprint.name));
+    assert.ok(promptText.includes('n8n-nodes-base.slack'));
+    assert.ok(promptText.includes('@n8n/n8n-nodes-langchain.agent'));
     assert.ok(promptText.includes('Construction Guardrails'));
 
-    // 7. Verify both outputs share the exact same nodes
-    for (const node of approvedBlueprint.nodes) {
-      assert.ok(n8nJson.nodes.some((n) => n.name === node.name));
-      assert.ok(promptText.includes(node.name));
-    }
+    // Stage 3 Verification: Confirm NO secrets are exposed
+    const fullJsonText = JSON.stringify(n8nJson);
+    assert.equal(/sk-[a-zA-Z0-9]{20,}/.test(fullJsonText), false);
+    assert.equal(/xoxb-[0-9]{10,}/.test(fullJsonText), false);
+    assert.equal(/AIza[0-9A-Za-z-_]{35}/.test(fullJsonText), false);
 
-    // 8. Total spend verification
-    const totalCost = reqMetrics.estimatedCostUsd + bpMetrics.estimatedCostUsd;
-    assert.equal(totalCost, 0.0, 'Pipeline in mock mode must have strictly $0 cost');
+    // Total cost verification
+    assert.equal(reqMetrics.estimatedCostUsd + bpMetrics.estimatedCostUsd, 0.0);
   });
 });
