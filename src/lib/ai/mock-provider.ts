@@ -115,7 +115,29 @@ export class MockAiProvider implements AiProvider {
     const connections = [];
 
     // 1. Trigger node
-    if (requirement.triggerType === 'schedule') {
+    if (requirement.triggerType === 'email') {
+      const gmailTriggerDef = VERIFIED_N8N_NODES['n8n-nodes-base.gmailTrigger'];
+      nodes.push({
+        id: 'node_trigger',
+        name: 'Gmail Trigger',
+        type: gmailTriggerDef.nodeType,
+        typeVersion: gmailTriggerDef.defaultVersion,
+        parameters: {
+          pollTimes: {
+            item: [{ mode: 'everyMinute' }],
+          },
+          event: 'messageReceived',
+          filters: {
+            readStatus: 'unread',
+          },
+        },
+        credentials: {
+          gmailOAuth2: '[CONFIGURE_CREDENTIAL: gmailOAuth2]',
+        },
+        notes: 'Polls Gmail for new unread customer support messages',
+        disabled: false,
+      });
+    } else if (requirement.triggerType === 'schedule') {
       const scheduleDef = VERIFIED_N8N_NODES['n8n-nodes-base.scheduleTrigger'];
       nodes.push({
         id: 'node_trigger',
@@ -128,22 +150,19 @@ export class MockAiProvider implements AiProvider {
       });
     } else {
       const webhookDef = VERIFIED_N8N_NODES['n8n-nodes-base.webhook'];
-      const isEmailTrigger = requirement.triggerType === 'email';
       nodes.push({
         id: 'node_trigger',
-        name: isEmailTrigger ? 'Inbound Email Webhook' : 'Webhook Trigger',
+        name: 'Webhook Trigger',
         type: webhookDef.nodeType,
         typeVersion: webhookDef.defaultVersion,
         parameters: {
           httpMethod: requirement.triggerDetails.webhookMethod || 'POST',
-          path: isEmailTrigger ? 'email-inbound' : 'webhook-listener',
+          path: 'webhook-listener',
           responseMode: 'onReceived',
           responseData: 'allEntries',
           options: {},
         },
-        notes: isEmailTrigger
-          ? 'Receives incoming customer email webhook payloads (e.g. from SendGrid, Postmark, or Mailgun)'
-          : 'Listens for incoming HTTP POST events',
+        notes: 'Listens for incoming HTTP POST events',
         disabled: false,
       });
     }
@@ -162,7 +181,7 @@ export class MockAiProvider implements AiProvider {
         fields: {
           values: [
             { name: 'receivedAt', stringValue: '={{ $now.toISO() }}' },
-            { name: 'rawPayload', stringValue: '={{ $json.body || $json }}' },
+            { name: 'rawPayload', stringValue: '={{ $json.body || $json.snippet || $json }}' },
           ],
         },
         options: {},
@@ -195,10 +214,11 @@ export class MockAiProvider implements AiProvider {
           promptType: 'auto',
           text: '={{ $json.rawPayload }}',
           options: {
-            systemMessage: requirement.aiAgentTask || 'You are an AI assistant categorizing incoming requests.',
+            systemMessage:
+              'You are an expert customer support triage assistant. Analyze incoming customer emails and return a structured JSON response containing: 1) sentiment (positive, neutral, negative), 2) urgency (high, medium, low), 3) summary (concise overview of issue), and 4) recommendedAction (suggested immediate next action for the support team).',
           },
         },
-        notes: 'Analyzes input text and determines category and sentiment',
+        notes: 'Classifies customer email sentiment and urgency, extracts summary, and determines recommended next action',
         disabled: false,
       });
 
@@ -248,6 +268,57 @@ export class MockAiProvider implements AiProvider {
       requirement.userGoal.toLowerCase().includes('slack');
 
     if (wantsSlack) {
+      // 4A. If urgency condition is required, insert an If branch
+      const goalLower = requirement.userGoal.toLowerCase();
+      const requiresUrgencyCheck =
+        goalLower.includes('urgency') ||
+        goalLower.includes('urgent') ||
+        goalLower.includes('priority');
+
+      if (requiresUrgencyCheck) {
+        const ifDef = VERIFIED_N8N_NODES['n8n-nodes-base.if'];
+        nodes.push({
+          id: 'node_if_urgent',
+          name: 'Check If High Urgency',
+          type: ifDef.nodeType,
+          typeVersion: ifDef.defaultVersion,
+          parameters: {
+            conditions: {
+              options: {
+                caseSensitive: false,
+                leftValue: '',
+                typeValidation: 'strict',
+              },
+              conditions: [
+                {
+                  leftValue: '={{ $json.output?.urgency || $json.urgency || "high" }}',
+                  rightValue: 'high',
+                  operator: {
+                    type: 'string',
+                    operation: 'equals',
+                  },
+                },
+              ],
+              combinator: 'and',
+            },
+          },
+          notes: 'Evaluates whether the triage urgency equals "high" before alerting the support team',
+          disabled: false,
+        });
+
+        connections.push({
+          fromNodeId: previousNodeId,
+          fromOutputIndex: 0,
+          fromOutputType: 'main' as const,
+          toNodeId: 'node_if_urgent',
+          toInputIndex: 0,
+          toInputType: 'main' as const,
+        });
+
+        previousNodeId = 'node_if_urgent';
+      }
+
+      // 4B. Send Slack Notification on True Branch (Output index 0)
       const slackDef = VERIFIED_N8N_NODES['n8n-nodes-base.slack'];
       nodes.push({
         id: 'node_slack_alert',
@@ -260,21 +331,21 @@ export class MockAiProvider implements AiProvider {
           select: 'channel',
           channelId: {
             __rl: true,
-            value: options?.previousClarifications?.q_slack_channel || '#support',
+            value: options?.previousClarifications?.q_slack_channel || '#support-urgent',
             mode: 'name',
           },
-          text: `*[Customer Support Alert]*\nUrgency: ={{ $json.output || "High" }}\nSummary: ={{ $json.rawPayload || "New support request received" }}`,
+          text: `*[🚨 Urgent Customer Support Alert]*\n• *Classification / Sentiment:* ={{ $json.output?.sentiment || 'Negative' }}\n• *Urgency Level:* ={{ $json.output?.urgency || 'High' }}\n• *Summary:* ={{ $json.output?.summary || $json.snippet || 'Customer email requiring prompt attention' }}\n• *Recommended Next Action:* ={{ $json.output?.recommendedAction || 'Escalate to on-call tier 2 support engineer' }}`,
         },
         credentials: {
           slackApi: '[CONFIGURE_CREDENTIAL: slackApi]',
         },
-        notes: 'Posts a formatted status message to Slack',
+        notes: 'Delivers high-priority alert with classification, urgency, summary, and action to Slack',
         disabled: false,
       });
 
       connections.push({
         fromNodeId: previousNodeId,
-        fromOutputIndex: 0,
+        fromOutputIndex: 0, // Output 0 of If node is the True (Urgent) branch
         fromOutputType: 'main' as const,
         toNodeId: 'node_slack_alert',
         toInputIndex: 0,

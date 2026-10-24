@@ -1,4 +1,5 @@
 import { WorkflowBlueprint } from '../schemas/blueprint';
+import { RequirementSpecification } from '../schemas/requirement';
 import { ValidationReport, ValidationIssue } from '../schemas/validation';
 import {
   isSupportedNodeType,
@@ -10,9 +11,12 @@ import {
 /**
  * Deterministic Validation Engine.
  * Evaluates generated workflow blueprints against verified node rules,
- * structural constraints, and security checks without live execution.
+ * structural constraints, semantic requirements fidelity, and security checks.
  */
-export function validateWorkflowBlueprint(blueprint: WorkflowBlueprint): ValidationReport {
+export function validateWorkflowBlueprint(
+  blueprint: WorkflowBlueprint,
+  requirement?: RequirementSpecification
+): ValidationReport {
   const errors: ValidationIssue[] = [];
   const warnings: ValidationIssue[] = [];
   const infos: ValidationIssue[] = [];
@@ -174,6 +178,69 @@ export function validateWorkflowBlueprint(blueprint: WorkflowBlueprint): Validat
       });
     } else {
       connectedNodeIds.add(conn.toNodeId);
+    }
+
+    // Validate connection output index bounds
+    const sourceNode = nodeMap.get(conn.fromNodeId);
+    if (sourceNode) {
+      const sourceDef = getNodeDefinition(sourceNode.type);
+      const outputCount = sourceDef?.outputs.length || 1;
+      if (conn.fromOutputIndex >= outputCount) {
+        errors.push({
+          severity: 'error',
+          code: 'INVALID_OUTPUT_INDEX',
+          message: `Node "${sourceNode.name}" has ${outputCount} output socket(s), but connection specified outputIndex ${conn.fromOutputIndex}.`,
+          nodeId: sourceNode.id,
+          suggestedCorrection: `Use an outputIndex between 0 and ${outputCount - 1}.`,
+        });
+      }
+    }
+  }
+
+  // 7. Semantic Requirement Fidelity Checks (when requirement is provided)
+  if (requirement) {
+    const goalLower = (requirement.userGoal || '').toLowerCase();
+    const isEmailRequest = requirement.triggerType === 'email' || goalLower.includes('email') || goalLower.includes('gmail');
+    const isExplicitWebhook = goalLower.includes('webhook');
+
+    // A. Detect silent webhook substitution when an email/Gmail trigger was requested
+    if (isEmailRequest && !isExplicitWebhook) {
+      const hasEmailTrigger = blueprint.nodes.some(
+        (n) => n.type === 'n8n-nodes-base.gmailTrigger' || n.type === 'n8n-nodes-base.emailReadImap'
+      );
+      const usesWebhook = blueprint.nodes.some((n) => n.type === 'n8n-nodes-base.webhook');
+
+      if (usesWebhook && !hasEmailTrigger) {
+        errors.push({
+          severity: 'error',
+          code: 'SUBSTITUTED_TRIGGER_DETECTED',
+          message: 'Workflow silently substituted a generic Webhook for the requested Gmail/Email trigger.',
+          suggestedCorrection: 'Use the verified n8n-nodes-base.gmailTrigger node to poll for incoming Gmail messages.',
+        });
+      }
+    }
+
+    // B. Detect omitted conditional branch when user goal asks for conditional logic
+    const requiresBranch =
+      goalLower.includes('if urgent') ||
+      goalLower.includes('if high priority') ||
+      goalLower.includes('if priority') ||
+      goalLower.includes('if sentiment') ||
+      goalLower.includes('classify its sentiment and urgency, then notify');
+
+    if (requiresBranch) {
+      const hasBranchNode = blueprint.nodes.some(
+        (n) => n.type === 'n8n-nodes-base.if' || n.type === 'n8n-nodes-base.switch'
+      );
+
+      if (!hasBranchNode) {
+        errors.push({
+          severity: 'error',
+          code: 'OMITTED_CONDITIONAL_BRANCH',
+          message: 'The automation requirement explicitly requests conditional logic ("if urgent" / "if high priority"), but the blueprint omits the conditional branch node (n8n-nodes-base.if).',
+          suggestedCorrection: 'Add an If node (n8n-nodes-base.if) between the AI Agent and the notification action.',
+        });
+      }
     }
   }
 

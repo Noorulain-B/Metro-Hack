@@ -23,8 +23,8 @@ export async function POST(request: Request) {
     const optimization = optimizeWorkflowBlueprint(rawBlueprint);
     const approvedBlueprint = optimization.optimizedBlueprint;
 
-    // 3. Deterministic validation
-    const validationReport = validateWorkflowBlueprint(approvedBlueprint);
+    // 3. Deterministic validation (against verified node rules & user requirement)
+    const validationReport = validateWorkflowBlueprint(approvedBlueprint, parsedRequirement);
 
     // 4. Deterministic n8n Workflow JSON generation
     const workflowJson = generateN8nWorkflowJson(approvedBlueprint);

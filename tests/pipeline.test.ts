@@ -60,7 +60,7 @@ describe('End-to-End Pipeline Verification: Customer Email Triage to Slack', () 
     const n8nJson = generateN8nWorkflowJson(approvedBlueprint);
     assert.equal(n8nJson.name, approvedBlueprint.name);
     assert.equal(n8nJson.nodes.length, approvedBlueprint.nodes.length);
-    assert.ok(n8nJson.connections['Inbound Email Webhook'] || n8nJson.connections['Webhook Trigger']);
+    assert.ok(n8nJson.connections['Gmail Trigger'] || n8nJson.connections['Inbound Email Webhook'] || n8nJson.connections['Webhook Trigger']);
 
     // Check Slack connection in JSON
     const slackJsonNode = n8nJson.nodes.find((n) => n.type === 'n8n-nodes-base.slack');

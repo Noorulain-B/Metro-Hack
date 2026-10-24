@@ -570,6 +570,52 @@ export const VERIFIED_N8N_NODES: Record<string, SmartNodeDefinition> = {
     documentationUrl: 'https://docs.n8n.io/integrations/builtin/app-nodes/n8n-nodes-base.googlesheets/',
     isAiNode: false,
   }),
+
+  // 15. Gmail Trigger
+  'n8n-nodes-base.gmailTrigger': SmartNodeDefinitionSchema.parse({
+    nodeType: 'n8n-nodes-base.gmailTrigger',
+    displayName: 'Gmail Trigger',
+    category: 'trigger',
+    supportedVersions: [1, 1.1],
+    defaultVersion: 1.1,
+    description: 'Triggers when a new email arrives in Gmail matching specific filter criteria.',
+    inputs: [],
+    outputs: ['main'],
+    defaultParameters: {
+      pollTimes: {
+        item: [
+          { mode: 'everyMinute' },
+        ],
+      },
+      event: 'messageReceived',
+      filters: {
+        readStatus: 'unread',
+      },
+    },
+    parameters: [
+      {
+        name: 'event',
+        displayName: 'Event',
+        type: 'options',
+        default: 'messageReceived',
+        required: true,
+        options: [
+          { name: 'Message Received', value: 'messageReceived' },
+        ],
+      },
+      {
+        name: 'pollTimes',
+        displayName: 'Poll Times',
+        type: 'collection',
+        default: { item: [{ mode: 'everyMinute' }] },
+        required: true,
+      },
+    ],
+    requiredParameters: ['event', 'pollTimes'],
+    credentialsRequired: 'gmailOAuth2',
+    documentationUrl: 'https://docs.n8n.io/integrations/builtin/app-nodes/n8n-nodes-base.gmailtrigger/',
+    isAiNode: false,
+  }),
 };
 
 /**
