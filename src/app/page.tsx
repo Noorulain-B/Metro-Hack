@@ -2,13 +2,21 @@
 
 import React, { useState } from 'react';
 import { RequirementSpecification } from '@/lib/schemas/requirement';
-import { WorkflowBlueprint } from '@/lib/schemas/blueprint';
+import { WorkflowBlueprint, BlueprintNode } from '@/lib/schemas/blueprint';
 import { ValidationReport } from '@/lib/schemas/validation';
 import { N8nWorkflowExport, formatN8nJsonString } from '@/lib/n8n/generator';
 import { OptimizationResult } from '@/lib/n8n/optimizer';
 import { AiUsageMetrics } from '@/lib/ai/types';
 import { STARTER_TEMPLATES, WorkflowTemplate } from '@/lib/templates';
 import { SavedWorkflowRecord } from '@/lib/db/repository';
+
+import { TopBar } from '@/components/layout/TopBar';
+import { Sidebar, NavView } from '@/components/layout/Sidebar';
+import { WorkflowCanvas } from '@/components/canvas/WorkflowCanvas';
+import { NodeInspector } from '@/components/canvas/NodeInspector';
+import { SavedWorkflowsModal } from '@/components/modals/SavedWorkflowsModal';
+import { TemplatesModal } from '@/components/modals/TemplatesModal';
+import { RegistryModal } from '@/components/modals/RegistryModal';
 
 export default function WorkflowBuilderPage() {
   // Input & Configuration state
@@ -34,13 +42,16 @@ export default function WorkflowBuilderPage() {
   const [generatedPrompt, setGeneratedPrompt] = useState<string>('');
   const [metrics, setMetrics] = useState<AiUsageMetrics | null>(null);
 
-  // Workspace UI tab state
+  // Workspace UI navigation & modal state
+  const [currentNavView, setCurrentNavView] = useState<NavView>('builder');
   const [activeTab, setActiveTab] = useState<'blueprint' | 'validation' | 'json' | 'prompt'>('blueprint');
   const [copiedType, setCopiedType] = useState<'json' | 'prompt' | null>(null);
+  const [selectedNode, setSelectedNode] = useState<BlueprintNode | null>(null);
+  const [activeModal, setActiveModal] = useState<'saved' | 'templates' | 'registry' | null>(null);
+  const [isPromptExpanded, setIsPromptExpanded] = useState<boolean>(true);
 
   // History & Saved Workflows state
   const [savedWorkflows, setSavedWorkflows] = useState<SavedWorkflowRecord[]>([]);
-  const [showHistoryModal, setShowHistoryModal] = useState<boolean>(false);
   const [isSaved, setIsSaved] = useState<boolean>(false);
 
   const fetchHistory = async () => {
@@ -55,15 +66,11 @@ export default function WorkflowBuilderPage() {
     }
   };
 
-  const openHistoryModal = () => {
-    fetchHistory();
-    setShowHistoryModal(true);
-  };
 
   // Step 1: Analyze user request
   const handleAnalyze = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!prompt.trim()) return;
+    if (!prompt.trim() || loading) return;
 
     setLoading(true);
     setErrorMsg(null);
@@ -90,7 +97,7 @@ export default function WorkflowBuilderPage() {
       setRequirement(data.requirement);
       setMetrics(data.metrics);
 
-      // If there are unanswered clarification questions, present them
+      // If there are clarification questions, present them
       if (data.requirement.clarifications && data.requirement.clarifications.length > 0) {
         setShowClarifications(true);
         setStatusMessage('Clarification questions generated.');
@@ -137,6 +144,7 @@ export default function WorkflowBuilderPage() {
       setMetrics(data.metrics);
       setShowClarifications(false);
       setIsSaved(false);
+      setSelectedNode(null);
       setStatusMessage('Workflow ready!');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Generation failed.';
@@ -150,6 +158,8 @@ export default function WorkflowBuilderPage() {
   const handleSelectTemplate = (tpl: WorkflowTemplate) => {
     setPrompt(tpl.userPrompt);
     setErrorMsg(null);
+    setActiveModal(null);
+    setCurrentNavView('builder');
   };
 
   // Copy helpers with visual confirmation
@@ -215,809 +225,601 @@ export default function WorkflowBuilderPage() {
     setWorkflowJson(record.workflowJson);
     setGeneratedPrompt(record.generatedPrompt);
     setValidationReport(record.validationReport);
-    setShowHistoryModal(false);
     setIsSaved(true);
+    setSelectedNode(null);
+    setActiveModal(null);
+    setCurrentNavView('builder');
+  };
+
+  // Delete a saved workflow from SQLite
+  const handleDeleteSaved = async (id: string) => {
+    try {
+      const res = await fetch(`/api/history?id=${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        fetchHistory();
+      }
+    } catch {
+      // Error handling
+    }
+  };
+
+  // Reset to empty new workflow
+  const handleNewWorkflow = () => {
+    setPrompt('');
+    setRequirement(null);
+    setBlueprint(null);
+    setOptimization(null);
+    setValidationReport(null);
+    setWorkflowJson(null);
+    setGeneratedPrompt(null as unknown as string);
+    setSelectedNode(null);
+    setIsSaved(false);
+    setErrorMsg(null);
+    setStatusMessage('');
+    setCurrentNavView('builder');
+  };
+
+  // Sidebar navigation handler
+  const handleNavSelect = (view: NavView) => {
+    if (view === 'saved') {
+      fetchHistory();
+      setActiveModal('saved');
+    } else if (view === 'templates') {
+      setActiveModal('templates');
+    } else if (view === 'registry') {
+      setActiveModal('registry');
+    } else {
+      setCurrentNavView('builder');
+    }
   };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-      {/* Top Navigation */}
-      <header
-        style={{
-          borderBottom: '1px solid var(--border-subtle)',
-          background: 'rgba(11, 15, 25, 0.85)',
-          backdropFilter: 'blur(16px)',
-          position: 'sticky',
-          top: 0,
-          zIndex: 40,
-        }}
-      >
-        <div
-          className="container"
+    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', backgroundColor: 'var(--bg-app)' }}>
+      {/* 1. Top Bar */}
+      <TopBar
+        blueprint={blueprint}
+        provider={provider}
+        targetN8nVersion={targetN8nVersion}
+        isSaved={isSaved}
+        copiedType={copiedType}
+        onSave={handleSaveWorkflow}
+        onCopyJson={() => workflowJson && handleCopy(formatN8nJsonString(workflowJson), 'json')}
+        onDownloadJson={handleDownloadJson}
+        onCopyPrompt={() => generatedPrompt && handleCopy(generatedPrompt, 'prompt')}
+      />
+
+      {/* 2. Workspace Body: Left Sidebar + Main Content */}
+      <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        {/* Left Navigation Sidebar */}
+        <Sidebar
+          currentView={currentNavView}
+          onSelectView={handleNavSelect}
+          onNewWorkflow={handleNewWorkflow}
+          savedCount={savedWorkflows.length}
+        />
+
+        {/* Main Content Workspace */}
+        <main
           style={{
-            height: '70px',
+            flex: 1,
             display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
+            flexDirection: 'column',
+            minWidth: 0,
+            overflow: 'hidden',
+            backgroundColor: 'var(--bg-canvas)',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-            <div
-              style={{
-                width: '38px',
-                height: '38px',
-                borderRadius: '10px',
-                background: 'linear-gradient(135deg, #ea4b35 0%, #ff6d5a 100%)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxShadow: '0 4px 12px rgba(234, 75, 53, 0.3)',
-                fontWeight: 800,
-                fontSize: '1.1rem',
-                color: '#fff',
-              }}
-            >
-              ⚡
-            </div>
-            <div>
-              <h1 style={{ fontSize: '1.15rem', fontWeight: 800, letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                n8n AI Workflow Builder
-                <span className="badge badge-n8n" style={{ fontSize: '0.68rem', padding: '2px 8px' }}>
-                  MVP
+          {/* Top Panel: Natural-Language Request Editor */}
+          <div
+            style={{
+              padding: '12px 18px',
+              borderBottom: '1px solid var(--border-subtle)',
+              backgroundColor: 'var(--bg-surface)',
+              flexShrink: 0,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '0.02em' }}>
+                  AUTOMATION INSTRUCTION
                 </span>
-              </h1>
-              <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                From plain English to validated automation, with fewer AI calls and less manual debugging.
-              </p>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            {/* Engine Indicator */}
-            <div
-              className={`badge ${provider === 'mock' ? 'badge-success' : 'badge-ai'}`}
-              style={{ padding: '6px 12px' }}
-            >
-              <span
-                style={{
-                  width: '7px',
-                  height: '7px',
-                  borderRadius: '50%',
-                  backgroundColor: provider === 'mock' ? '#10b981' : '#a855f7',
-                  boxShadow: provider === 'mock' ? '0 0 8px #10b981' : '0 0 8px #a855f7',
-                }}
-              />
-              {provider === 'mock' ? 'Local Mock Engine ($0 Free)' : 'Gemini AI Provider'}
-            </div>
-
-            {/* Saved Workflows Button */}
-            <button
-              onClick={openHistoryModal}
-              className="btn-secondary"
-              style={{ padding: '8px 14px', fontSize: '0.82rem' }}
-            >
-              📁 Saved Workflows ({savedWorkflows.length})
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Content Workspace */}
-      <main className="container" style={{ flex: 1, padding: '28px 24px', display: 'grid', gridTemplateColumns: '440px 1fr', gap: '28px' }}>
-        {/* Left Column: Automation Builder Form */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          <div className="glass-panel" style={{ padding: '24px' }}>
-            <h2 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span>📝</span> Describe Your Automation
-            </h2>
-            <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: '16px' }}>
-              Explain what you want to automate in plain English. Verified n8n nodes will be selected deterministically.
-            </p>
-
-            <form onSubmit={handleAnalyze}>
-              <div style={{ marginBottom: '16px' }}>
-                <textarea
-                  id="user-prompt-input"
-                  rows={5}
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  placeholder="e.g. When a new customer email arrives in Gmail, use an AI agent to analyze sentiment and urgency, and if high priority notify the team in Slack."
-                  style={{
-                    width: '100%',
-                    backgroundColor: 'rgba(0, 0, 0, 0.35)',
-                    border: '1px solid var(--border-subtle)',
-                    borderRadius: 'var(--radius-md)',
-                    padding: '12px 14px',
-                    color: '#fff',
-                    fontSize: '0.88rem',
-                    lineHeight: '1.5',
-                    resize: 'vertical',
-                    outline: 'none',
-                  }}
-                />
+                <span className="badge badge-neutral" style={{ fontSize: '0.66rem' }}>
+                  Natural Language to Verified n8n
+                </span>
               </div>
 
-              {/* Starter Template Chips */}
-              <div style={{ marginBottom: '20px' }}>
-                <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-dim)', marginBottom: '8px' }}>
-                  QUICK EXAMPLES (VERIFIED NODES):
-                </div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                  {STARTER_TEMPLATES.map((tpl) => (
-                    <button
-                      key={tpl.id}
-                      type="button"
-                      onClick={() => handleSelectTemplate(tpl)}
-                      className="btn-chip"
-                    >
-                      {tpl.title}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Configuration Settings */}
-              <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '16px', marginBottom: '20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <label htmlFor="provider-select" style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-muted)' }}>
-                    AI Provider:
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                {/* AI Provider selector */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <label htmlFor="provider-select" style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>
+                    Provider:
                   </label>
                   <select
                     id="provider-select"
                     value={provider}
                     onChange={(e) => setProvider(e.target.value as 'mock' | 'gemini')}
-                    style={{
-                      backgroundColor: 'rgba(255, 255, 255, 0.05)',
-                      border: '1px solid var(--border-subtle)',
-                      borderRadius: 'var(--radius-sm)',
-                      padding: '6px 10px',
-                      color: '#fff',
-                      fontSize: '0.82rem',
-                    }}
+                    className="select-input"
+                    style={{ fontSize: '0.72rem', padding: '3px 8px' }}
                   >
-                    <option value="mock">Local Mock Engine ($0 Free / Offline)</option>
-                    <option value="gemini">Google Gemini (Requires API Key)</option>
+                    <option value="mock">Mock Engine ($0 Free)</option>
+                    <option value="gemini">Google Gemini AI Pro</option>
                   </select>
                 </div>
 
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <label htmlFor="version-input" style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-muted)' }}>
-                    Target n8n Version:
+                {/* Target n8n version selector */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <label htmlFor="version-select" style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>
+                    Target n8n:
                   </label>
-                  <input
-                    id="version-input"
-                    type="text"
+                  <select
+                    id="version-select"
                     value={targetN8nVersion}
                     onChange={(e) => setTargetN8nVersion(e.target.value)}
+                    className="select-input"
+                    style={{ fontSize: '0.72rem', padding: '3px 8px' }}
+                  >
+                    <option value="1.70.0">v1.70.0 (Recommended)</option>
+                    <option value="1.60.0">v1.60.0</option>
+                  </select>
+                </div>
+
+                {/* Collapse button */}
+                <button
+                  type="button"
+                  onClick={() => setIsPromptExpanded(!isPromptExpanded)}
+                  className="btn-icon"
+                  style={{ width: '26px', height: '26px', fontSize: '0.75rem' }}
+                  title={isPromptExpanded ? 'Collapse editor' : 'Expand editor'}
+                >
+                  {isPromptExpanded ? '▲' : '▼'}
+                </button>
+              </div>
+            </div>
+
+            {isPromptExpanded && (
+              <form onSubmit={handleAnalyze} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+                  <textarea
+                    id="user-prompt-input"
+                    rows={2}
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    placeholder="e.g. When a new customer email arrives, classify its sentiment and urgency, then notify the support team in Slack."
                     style={{
-                      width: '140px',
-                      backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                      flex: 1,
+                      backgroundColor: 'var(--bg-surface-subtle)',
                       border: '1px solid var(--border-subtle)',
                       borderRadius: 'var(--radius-sm)',
-                      padding: '6px 10px',
-                      color: '#fff',
+                      padding: '8px 12px',
+                      color: 'var(--text-primary)',
                       fontSize: '0.82rem',
+                      lineHeight: '1.45',
+                      resize: 'none',
+                      outline: 'none',
                     }}
                   />
-                </div>
-              </div>
 
-              {/* Error Message */}
-              {errorMsg && (
-                <div
-                  style={{
-                    padding: '12px',
-                    borderRadius: 'var(--radius-md)',
-                    backgroundColor: 'rgba(244, 63, 94, 0.1)',
-                    border: '1px solid rgba(244, 63, 94, 0.25)',
-                    color: '#fb7185',
-                    fontSize: '0.82rem',
-                    marginBottom: '16px',
-                  }}
-                >
-                  ⚠️ {errorMsg}
-                </div>
-              )}
-
-              {/* Action Button */}
-              <button
-                id="generate-button"
-                type="submit"
-                disabled={loading || !prompt.trim()}
-                className="btn-primary"
-                style={{ width: '100%' }}
-              >
-                {loading ? (
-                  <>
-                    <span className="pulse-glow">⏳</span> {statusMessage || 'Processing...'}
-                  </>
-                ) : (
-                  <>
-                    <span>⚡</span> Analyze & Build Workflow
-                  </>
-                )}
-              </button>
-            </form>
-          </div>
-
-          {/* Clarification Modal / Step */}
-          {showClarifications && requirement && requirement.clarifications.length > 0 && (
-            <div className="glass-panel" style={{ padding: '20px', border: '1px solid var(--accent-amber)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
-                <span className="badge badge-warning">Targeted Clarification</span>
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  Only asked when essential details are ambiguous
-                </span>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginBottom: '16px' }}>
-                {requirement.clarifications.map((q) => (
-                  <div key={q.id} style={{ background: 'rgba(0,0,0,0.3)', padding: '12px', borderRadius: 'var(--radius-md)' }}>
-                    <div style={{ fontSize: '0.86rem', fontWeight: 600, color: '#fff', marginBottom: '4px' }}>
-                      {q.question}
-                    </div>
-                    <div style={{ fontSize: '0.76rem', color: 'var(--text-dim)', marginBottom: '8px' }}>
-                      {q.context}
-                    </div>
-
-                    {q.options && q.options.length > 0 ? (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                        {q.options.map((opt) => (
-                          <button
-                            key={opt}
-                            type="button"
-                            onClick={() =>
-                              setClarificationAnswers((prev) => ({ ...prev, [q.id]: opt }))
-                            }
-                            className="btn-chip"
-                            style={{
-                              borderColor:
-                                (clarificationAnswers[q.id] || q.defaultAnswer) === opt
-                                  ? 'var(--accent-n8n)'
-                                  : 'var(--border-subtle)',
-                              color:
-                                (clarificationAnswers[q.id] || q.defaultAnswer) === opt
-                                  ? '#fff'
-                                  : 'var(--text-muted)',
-                              backgroundColor:
-                                (clarificationAnswers[q.id] || q.defaultAnswer) === opt
-                                  ? 'rgba(234, 75, 53, 0.2)'
-                                  : 'transparent',
-                            }}
-                          >
-                            {opt}
-                          </button>
-                        ))}
-                      </div>
-                    ) : (
-                      <input
-                        type="text"
-                        value={clarificationAnswers[q.id] || ''}
-                        onChange={(e) =>
-                          setClarificationAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))
-                        }
-                        placeholder={`Default: ${q.defaultAnswer}`}
-                        style={{
-                          width: '100%',
-                          backgroundColor: 'rgba(255, 255, 255, 0.05)',
-                          border: '1px solid var(--border-subtle)',
-                          borderRadius: 'var(--radius-sm)',
-                          padding: '6px 10px',
-                          color: '#fff',
-                          fontSize: '0.82rem',
-                        }}
-                      />
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              <div style={{ display: 'flex', gap: '10px' }}>
-                <button
-                  type="button"
-                  onClick={() => executeBlueprintGeneration(requirement)}
-                  className="btn-primary"
-                  style={{ flex: 1, padding: '10px' }}
-                >
-                  Apply & Generate Blueprint
-                </button>
-                <button
-                  type="button"
-                  onClick={() => executeBlueprintGeneration(requirement)}
-                  className="btn-secondary"
-                  style={{ padding: '10px' }}
-                >
-                  Accept Defaults
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Usage Transparency Card */}
-          {metrics && (
-            <div className="glass-panel" style={{ padding: '16px' }}>
-              <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-dim)', marginBottom: '8px' }}>
-                COST & TRANSPARENCY TRACKER
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '10px', fontSize: '0.82rem' }}>
-                <div>
-                  <span style={{ color: 'var(--text-dim)' }}>Engine: </span>
-                  <span style={{ fontWeight: 600 }}>{metrics.modelName}</span>
-                </div>
-                <div>
-                  <span style={{ color: 'var(--text-dim)' }}>Estimated Cost: </span>
-                  <span style={{ fontWeight: 600, color: '#10b981' }}>
-                    ${metrics.estimatedCostUsd.toFixed(2)} {metrics.isMock && '(Free)'}
-                  </span>
-                </div>
-                <div>
-                  <span style={{ color: 'var(--text-dim)' }}>Tokens: </span>
-                  <span>{metrics.totalTokens.toLocaleString()} total</span>
-                </div>
-                <div>
-                  <span style={{ color: 'var(--text-dim)' }}>AI Calls: </span>
-                  <span>{metrics.aiCallsCount} call</span>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Right Column: Interactive Workspace & Generated Outputs */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          {/* Workspace Tabs Header */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              borderBottom: '1px solid var(--border-subtle)',
-              paddingBottom: '12px',
-            }}
-          >
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <button
-                id="tab-blueprint"
-                onClick={() => setActiveTab('blueprint')}
-                className="btn-secondary"
-                style={{
-                  backgroundColor: activeTab === 'blueprint' ? 'rgba(234, 75, 53, 0.15)' : 'transparent',
-                  borderColor: activeTab === 'blueprint' ? 'var(--accent-n8n)' : 'transparent',
-                  color: activeTab === 'blueprint' ? '#fff' : 'var(--text-muted)',
-                }}
-              >
-                🗺️ Workflow Blueprint
-              </button>
-              <button
-                id="tab-validation"
-                onClick={() => setActiveTab('validation')}
-                className="btn-secondary"
-                style={{
-                  backgroundColor: activeTab === 'validation' ? 'rgba(234, 75, 53, 0.15)' : 'transparent',
-                  borderColor: activeTab === 'validation' ? 'var(--accent-n8n)' : 'transparent',
-                  color: activeTab === 'validation' ? '#fff' : 'var(--text-muted)',
-                }}
-              >
-                🛡️ Validation Report
-                {validationReport && (
-                  <span
-                    className={`badge ${validationReport.valid ? 'badge-success' : 'badge-error'}`}
-                    style={{ marginLeft: '6px', padding: '2px 6px', fontSize: '0.65rem' }}
+                  <button
+                    id="generate-button"
+                    type="submit"
+                    disabled={loading || !prompt.trim()}
+                    className="btn-primary"
+                    style={{ height: '48px', padding: '0 18px', fontSize: '0.82rem', flexShrink: 0 }}
                   >
-                    {validationReport.valid ? 'Passed' : `${validationReport.errors.length} Errors`}
-                  </span>
-                )}
-              </button>
-              <button
-                id="tab-json"
-                onClick={() => setActiveTab('json')}
-                className="btn-secondary"
-                style={{
-                  backgroundColor: activeTab === 'json' ? 'rgba(234, 75, 53, 0.15)' : 'transparent',
-                  borderColor: activeTab === 'json' ? 'var(--accent-n8n)' : 'transparent',
-                  color: activeTab === 'json' ? '#fff' : 'var(--text-muted)',
-                }}
-              >
-                📄 n8n Workflow JSON
-              </button>
-              <button
-                id="tab-prompt"
-                onClick={() => setActiveTab('prompt')}
-                className="btn-secondary"
-                style={{
-                  backgroundColor: activeTab === 'prompt' ? 'rgba(234, 75, 53, 0.15)' : 'transparent',
-                  borderColor: activeTab === 'prompt' ? 'var(--accent-n8n)' : 'transparent',
-                  color: activeTab === 'prompt' ? '#fff' : 'var(--text-muted)',
-                }}
-              >
-                💬 Optimized AI Prompt
-              </button>
-            </div>
+                    {loading ? (
+                      <>
+                        <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⚙️</span>
+                        <span>Building...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>⚡</span>
+                        <span>Analyze & Build</span>
+                      </>
+                    )}
+                  </button>
+                </div>
 
-            {/* Quick Export Actions */}
-            {blueprint && (
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <button
-                  id="save-workflow-button"
-                  onClick={handleSaveWorkflow}
-                  className="btn-secondary"
-                  style={{ fontSize: '0.82rem', padding: '8px 14px' }}
-                >
-                  {isSaved ? '✓ Saved to DB' : '💾 Save Workflow'}
+                {/* Quick Examples Chips */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '0.68rem', fontWeight: 600, color: 'var(--text-tertiary)' }}>
+                    QUICK EXAMPLES:
+                  </span>
+                  {STARTER_TEMPLATES.map((tpl) => (
+                    <button
+                      key={tpl.id}
+                      type="button"
+                      onClick={() => handleSelectTemplate(tpl)}
+                      className="chip"
+                    >
+                      {tpl.title}
+                    </button>
+                  ))}
+                </div>
+              </form>
+            )}
+
+            {/* Error Message banner */}
+            {errorMsg && (
+              <div
+                style={{
+                  marginTop: '10px',
+                  padding: '8px 12px',
+                  borderRadius: 'var(--radius-sm)',
+                  backgroundColor: 'rgba(244, 63, 94, 0.1)',
+                  border: '1px solid rgba(244, 63, 94, 0.3)',
+                  color: '#fb7185',
+                  fontSize: '0.78rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                }}
+              >
+                <span>⚠️ {errorMsg}</span>
+                <button type="button" onClick={() => setErrorMsg(null)} className="btn-icon" style={{ width: '20px', height: '20px' }}>
+                  ✕
                 </button>
-                <button
-                  id="download-json-button"
-                  onClick={handleDownloadJson}
-                  className="btn-primary"
-                  style={{ fontSize: '0.82rem', padding: '8px 16px' }}
-                >
-                  ⬇️ Download .json
-                </button>
+              </div>
+            )}
+
+            {/* Status notification */}
+            {statusMessage && !errorMsg && (
+              <div style={{ marginTop: '6px', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                {statusMessage} {metrics && `· AI Cost: $${metrics.estimatedCostUsd.toFixed(4)} · Model: ${metrics.modelName} · Tokens: ${metrics.totalTokens}`}
               </div>
             )}
           </div>
 
-          {/* Empty State */}
-          {!blueprint && !loading && (
+          {/* Clarification Questions Card if Ambiguous */}
+          {showClarifications && requirement && requirement.clarifications.length > 0 && (
             <div
-              className="glass-panel"
               style={{
-                padding: '60px 40px',
-                textAlign: 'center',
+                padding: '12px 18px',
+                backgroundColor: 'rgba(245, 158, 11, 0.08)',
+                borderBottom: '1px solid rgba(245, 158, 11, 0.25)',
                 display: 'flex',
                 flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
+                gap: '8px',
               }}
             >
-              <div style={{ fontSize: '3rem', marginBottom: '16px' }}>⚡</div>
-              <h3 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '8px' }}>
-                Ready to Build Your Automation
-              </h3>
-              <p style={{ color: 'var(--text-muted)', maxWidth: '500px', fontSize: '0.9rem', lineHeight: '1.6' }}>
-                Enter an automation request on the left or select a verified starter template. The system will analyze requirements, verify n8n nodes, optimize execution, and generate both an importable JSON file and an optimized prompt.
-              </p>
+              <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#fbbf24' }}>
+                💡 Clarification Needed to Avoid Assumptions:
+              </div>
+              {requirement.clarifications.map((q) => (
+                <div key={q.id} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontSize: '0.76rem', color: 'var(--text-primary)' }}>{q.question}</span>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    {q.options && q.options.map((opt) => (
+                      <button
+                        key={opt}
+                        type="button"
+                        onClick={() => {
+                          const updated = { ...clarificationAnswers, [q.id]: opt };
+                          setClarificationAnswers(updated);
+                          if (requirement) executeBlueprintGeneration(requirement);
+                        }}
+                        className="btn-secondary"
+                        style={{ fontSize: '0.72rem', padding: '3px 8px' }}
+                      >
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
 
-          {/* Tab 1: Workflow Blueprint View */}
-          {blueprint && activeTab === 'blueprint' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              {/* Optimization Banner if applied */}
-              {optimization && optimization.appliedRules.length > 0 && (
-                <div
-                  style={{
-                    padding: '14px 18px',
-                    borderRadius: 'var(--radius-md)',
-                    backgroundColor: 'rgba(16, 185, 129, 0.08)',
-                    border: '1px solid rgba(16, 185, 129, 0.25)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '4px',
-                  }}
-                >
-                  <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#34d399', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span>✨</span> Workflow Optimization Applied ({optimization.estimatedAiSavings})
-                  </div>
-                  {optimization.appliedRules.map((rule, idx) => (
-                    <div key={idx} style={{ fontSize: '0.8rem', color: 'var(--text-main)' }}>
-                      • {rule}
+          {/* Center: Interactive Workflow Canvas + Inspector */}
+          <div style={{ flex: 1, minHeight: '360px', display: 'flex', position: 'relative', overflow: 'hidden' }}>
+            <div style={{ flex: 1, position: 'relative', height: '100%', overflow: 'hidden' }}>
+              <WorkflowCanvas
+                blueprint={blueprint}
+                selectedNodeId={selectedNode?.id}
+                onSelectNode={(node) => setSelectedNode(node)}
+              />
+            </div>
+
+            {/* Node Inspector Drawer */}
+            {selectedNode && (
+              <NodeInspector
+                node={selectedNode}
+                onClose={() => setSelectedNode(null)}
+              />
+            )}
+          </div>
+
+          {/* Bottom Panel: Structured Result Tabs */}
+          {blueprint && (
+            <div
+              style={{
+                height: '240px',
+                backgroundColor: 'var(--bg-surface)',
+                borderTop: '1px solid var(--border-subtle)',
+                display: 'flex',
+                flexDirection: 'column',
+                flexShrink: 0,
+              }}
+            >
+              {/* Tabs Navigation Bar */}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  borderBottom: '1px solid var(--border-subtle)',
+                  padding: '0 14px',
+                  backgroundColor: 'var(--bg-surface-elevated)',
+                  height: '36px',
+                }}
+              >
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('blueprint')}
+                    style={{
+                      padding: '6px 12px',
+                      fontSize: '0.76rem',
+                      fontWeight: 600,
+                      color: activeTab === 'blueprint' ? '#ffffff' : 'var(--text-secondary)',
+                      borderBottom: activeTab === 'blueprint' ? '2px solid var(--accent-primary)' : '2px solid transparent',
+                      background: 'transparent',
+                      borderLeft: 'none',
+                      borderRight: 'none',
+                      borderTop: 'none',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    📋 Blueprint ({blueprint.nodes.length} Nodes)
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('validation')}
+                    style={{
+                      padding: '6px 12px',
+                      fontSize: '0.76rem',
+                      fontWeight: 600,
+                      color: activeTab === 'validation' ? '#ffffff' : 'var(--text-secondary)',
+                      borderBottom: activeTab === 'validation' ? '2px solid var(--accent-primary)' : '2px solid transparent',
+                      background: 'transparent',
+                      borderLeft: 'none',
+                      borderRight: 'none',
+                      borderTop: 'none',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                    }}
+                  >
+                    <span>🛡️ Validation</span>
+                    {validationReport && (
+                      <span
+                        style={{
+                          width: '7px',
+                          height: '7px',
+                          borderRadius: '50%',
+                          backgroundColor: validationReport.valid ? '#10b981' : '#f43f5e',
+                        }}
+                      />
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('json')}
+                    style={{
+                      padding: '6px 12px',
+                      fontSize: '0.76rem',
+                      fontWeight: 600,
+                      color: activeTab === 'json' ? '#ffffff' : 'var(--text-secondary)',
+                      borderBottom: activeTab === 'json' ? '2px solid var(--accent-primary)' : '2px solid transparent',
+                      background: 'transparent',
+                      borderLeft: 'none',
+                      borderRight: 'none',
+                      borderTop: 'none',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {'{ }'} n8n Workflow JSON
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('prompt')}
+                    style={{
+                      padding: '6px 12px',
+                      fontSize: '0.76rem',
+                      fontWeight: 600,
+                      color: activeTab === 'prompt' ? '#ffffff' : 'var(--text-secondary)',
+                      borderBottom: activeTab === 'prompt' ? '2px solid var(--accent-primary)' : '2px solid transparent',
+                      background: 'transparent',
+                      borderLeft: 'none',
+                      borderRight: 'none',
+                      borderTop: 'none',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    📄 Optimized Prompt
+                  </button>
+                </div>
+
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)' }}>
+                  Single Canonical Source: {blueprint.name}
+                </div>
+              </div>
+
+              {/* Tab Content Body */}
+              <div style={{ flex: 1, padding: '12px 16px', overflowY: 'auto' }}>
+                {/* Tab 1: Blueprint */}
+                {activeTab === 'blueprint' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {optimization && optimization.appliedRules.length > 0 && (
+                      <div
+                        style={{
+                          padding: '8px 12px',
+                          borderRadius: 'var(--radius-sm)',
+                          backgroundColor: 'rgba(16, 185, 129, 0.08)',
+                          border: '1px solid rgba(16, 185, 129, 0.25)',
+                          fontSize: '0.74rem',
+                          color: '#34d399',
+                        }}
+                      >
+                        ✨ Optimization: {optimization.appliedRules.join(' · ')}
+                      </div>
+                    )}
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '10px' }}>
+                      {/* Assumptions */}
+                      <div style={{ backgroundColor: 'var(--bg-surface-subtle)', padding: '10px', borderRadius: 'var(--radius-sm)' }}>
+                        <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-tertiary)', marginBottom: '4px' }}>
+                          EXPLICIT ASSUMPTIONS ({blueprint.assumptions.length})
+                        </div>
+                        <ul style={{ paddingLeft: '14px', fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                          {blueprint.assumptions.map((a, i) => (
+                            <li key={i}>{a}</li>
+                          ))}
+                        </ul>
+                      </div>
+
+                      {/* Expected Outputs */}
+                      <div style={{ backgroundColor: 'var(--bg-surface-subtle)', padding: '10px', borderRadius: 'var(--radius-sm)' }}>
+                        <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-tertiary)', marginBottom: '4px' }}>
+                          EXPECTED OUTPUTS ({blueprint.expectedOutputs.length})
+                        </div>
+                        <ul style={{ paddingLeft: '14px', fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                          {blueprint.expectedOutputs.map((o, i) => (
+                            <li key={i}>{o}</li>
+                          ))}
+                        </ul>
+                      </div>
                     </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Blueprint Summary Card */}
-              <div className="glass-panel" style={{ padding: '20px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
-                  <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>{blueprint.name}</h3>
-                  <span className="badge badge-info">Target n8n v{blueprint.targetN8nVersion}</span>
-                </div>
-                <p style={{ fontSize: '0.86rem', color: 'var(--text-muted)', marginBottom: '16px' }}>
-                  {blueprint.description}
-                </p>
-
-                {/* Ordered Node Steps */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-dim)', letterSpacing: '0.04em' }}>
-                    EXECUTION PIPELINE ({blueprint.nodes.length} NODES)
                   </div>
-                  {blueprint.nodes.map((node, index) => (
+                )}
+
+                {/* Tab 2: Validation */}
+                {activeTab === 'validation' && validationReport && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                     <div
-                      key={node.id}
                       style={{
+                        padding: '10px 14px',
+                        borderRadius: 'var(--radius-sm)',
+                        backgroundColor: validationReport.valid ? 'rgba(16, 185, 129, 0.08)' : 'rgba(244, 63, 94, 0.08)',
+                        border: `1px solid ${validationReport.valid ? 'rgba(16, 185, 129, 0.25)' : 'rgba(244, 63, 94, 0.25)'}`,
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'space-between',
-                        padding: '12px 16px',
-                        borderRadius: 'var(--radius-md)',
-                        backgroundColor: 'rgba(255, 255, 255, 0.02)',
-                        border: '1px solid var(--border-subtle)',
                       }}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        <div
-                          style={{
-                            width: '28px',
-                            height: '28px',
-                            borderRadius: '50%',
-                            backgroundColor: 'rgba(234, 75, 53, 0.15)',
-                            color: '#ff6d5a',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            fontSize: '0.8rem',
-                            fontWeight: 700,
-                          }}
-                        >
-                          {index + 1}
-                        </div>
-                        <div>
-                          <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>{node.name}</div>
-                          <div style={{ fontSize: '0.76rem', color: 'var(--text-dim)', fontFamily: 'monospace' }}>
-                            {node.type} (v{node.typeVersion})
-                          </div>
-                        </div>
-                      </div>
-
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        {node.credentials && Object.keys(node.credentials).length > 0 && (
-                          <span className="badge badge-warning" style={{ fontSize: '0.7rem' }}>
-                            🔑 {Object.keys(node.credentials).join(', ')}
-                          </span>
-                        )}
-                        <span className="badge badge-n8n" style={{ fontSize: '0.7rem' }}>
-                          Verified
+                        <span style={{ color: validationReport.valid ? '#34d399' : '#fb7185', fontWeight: 700, fontSize: '0.9rem' }}>
+                          {validationReport.valid ? '✓ Passed' : '✖ Issues Found'}
+                        </span>
+                        <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
+                          Validated against official n8n v{validationReport.targetN8nVersion} schemas & verified registry.
                         </span>
                       </div>
+                      <span className="badge badge-neutral" style={{ fontSize: '0.64rem' }}>
+                        0 Blocking Errors · {validationReport.warnings.length} Warnings
+                      </span>
                     </div>
-                  ))}
-                </div>
-              </div>
 
-              {/* Explicit Assumptions Card */}
-              {blueprint.assumptions && blueprint.assumptions.length > 0 && (
-                <div className="glass-panel" style={{ padding: '18px' }}>
-                  <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-dim)', marginBottom: '8px' }}>
-                    EXPLICIT ASSUMPTIONS & RESOLUTIONS
-                  </div>
-                  <ul style={{ paddingLeft: '18px', fontSize: '0.84rem', color: 'var(--text-muted)', lineHeight: '1.6' }}>
-                    {blueprint.assumptions.map((item, idx) => (
-                      <li key={idx}>{item}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Tab 2: Validation Report */}
-          {validationReport && activeTab === 'validation' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div
-                className="glass-panel"
-                style={{
-                  padding: '20px',
-                  borderLeft: `4px solid ${validationReport.valid ? '#10b981' : '#f43f5e'}`,
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-                  <h3 style={{ fontSize: '1.05rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    {validationReport.valid ? (
-                      <>
-                        <span style={{ color: '#10b981' }}>✓</span> Workflow Structurally Valid
-                      </>
-                    ) : (
-                      <>
-                        <span style={{ color: '#f43f5e' }}>✖</span> Validation Issues Found
-                      </>
-                    )}
-                  </h3>
-                  <span className="badge badge-info">Baseline: v{validationReport.targetN8nVersion}</span>
-                </div>
-                <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)' }}>
-                  All node types, versions, connections, and required parameters have been deterministically evaluated against official n8n schemas.
-                </p>
-              </div>
-
-              {/* Issues List */}
-              {validationReport.errors.length > 0 && (
-                <div className="glass-panel" style={{ padding: '20px', borderColor: 'rgba(244, 63, 94, 0.3)' }}>
-                  <div style={{ fontSize: '0.84rem', fontWeight: 700, color: '#fb7185', marginBottom: '12px' }}>
-                    BLOCKING ERRORS ({validationReport.errors.length})
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    {validationReport.errors.map((err, idx) => (
-                      <div key={idx} style={{ padding: '10px', backgroundColor: 'rgba(244, 63, 94, 0.05)', borderRadius: 'var(--radius-md)' }}>
-                        <div style={{ fontWeight: 600, fontSize: '0.85rem', color: '#fff' }}>
-                          [{err.code}] {err.message}
-                        </div>
-                        {err.suggestedCorrection && (
-                          <div style={{ fontSize: '0.78rem', color: '#fbbf24', marginTop: '4px' }}>
-                            Correction: {err.suggestedCorrection}
-                          </div>
-                        )}
+                    {/* Disclaimers: Checks Not Performed */}
+                    <div style={{ backgroundColor: 'var(--bg-surface-subtle)', padding: '10px 14px', borderRadius: 'var(--radius-sm)' }}>
+                      <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-tertiary)', marginBottom: '4px' }}>
+                        CHECKS NOT PERFORMED (PREVENTS FALSE CERTAINTY)
                       </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Warnings List */}
-              {validationReport.warnings.length > 0 && (
-                <div className="glass-panel" style={{ padding: '20px' }}>
-                  <div style={{ fontSize: '0.84rem', fontWeight: 700, color: '#fbbf24', marginBottom: '12px' }}>
-                    WARNINGS & SETUP NOTES ({validationReport.warnings.length})
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    {validationReport.warnings.map((warn, idx) => (
-                      <div key={idx} style={{ padding: '10px', backgroundColor: 'rgba(245, 158, 11, 0.05)', borderRadius: 'var(--radius-md)' }}>
-                        <div style={{ fontWeight: 600, fontSize: '0.85rem', color: '#fff' }}>
-                          [{warn.code}] {warn.message}
-                        </div>
-                        {warn.suggestedCorrection && (
-                          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                            Action: {warn.suggestedCorrection}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Checks Not Performed Disclaimer */}
-              <div className="glass-panel" style={{ padding: '18px', backgroundColor: 'rgba(0, 0, 0, 0.3)' }}>
-                <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-dim)', marginBottom: '8px' }}>
-                  CHECKS NOT PERFORMED (PREVENTS FALSE CERTAINTY)
-                </div>
-                <ul style={{ paddingLeft: '18px', fontSize: '0.8rem', color: 'var(--text-dim)', lineHeight: '1.6' }}>
-                  {validationReport.checksNotPerformed.map((item, idx) => (
-                    <li key={idx}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          )}
-
-          {/* Tab 3: n8n Workflow JSON Preview */}
-          {workflowJson && activeTab === 'json' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div style={{ fontSize: '0.84rem', color: 'var(--text-muted)' }}>
-                  Ready to copy and paste or download into your n8n canvas (Manual Import).
-                </div>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <button
-                    id="copy-json-button"
-                    onClick={() => handleCopy(formatN8nJsonString(workflowJson), 'json')}
-                    className="btn-secondary"
-                    style={{ fontSize: '0.8rem', padding: '6px 12px' }}
-                  >
-                    {copiedType === 'json' ? '✓ Copied to Clipboard!' : '📋 Copy JSON'}
-                  </button>
-                  <button
-                    onClick={handleDownloadJson}
-                    className="btn-primary"
-                    style={{ fontSize: '0.8rem', padding: '6px 14px' }}
-                  >
-                    ⬇️ Download .json
-                  </button>
-                </div>
-              </div>
-
-              <div className="code-container" style={{ maxHeight: '550px' }}>
-                <pre>{formatN8nJsonString(workflowJson)}</pre>
-              </div>
-            </div>
-          )}
-
-          {/* Tab 4: Optimized AI Prompt Preview */}
-          {generatedPrompt && activeTab === 'prompt' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div style={{ fontSize: '0.84rem', color: 'var(--text-muted)' }}>
-                  Optimized prompt based on the approved canonical blueprint.
-                </div>
-                <button
-                  id="copy-prompt-button"
-                  onClick={() => handleCopy(generatedPrompt, 'prompt')}
-                  className="btn-secondary"
-                  style={{ fontSize: '0.8rem', padding: '6px 12px' }}
-                >
-                  {copiedType === 'prompt' ? '✓ Copied to Clipboard!' : '📋 Copy Prompt'}
-                </button>
-              </div>
-
-              <div className="code-container" style={{ maxHeight: '550px', whiteSpace: 'pre-wrap' }}>
-                {generatedPrompt}
-              </div>
-            </div>
-          )}
-        </div>
-      </main>
-
-      {/* History Modal */}
-      {showHistoryModal && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.75)',
-            backdropFilter: 'blur(8px)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 50,
-            padding: '24px',
-          }}
-        >
-          <div className="glass-panel-elevated" style={{ width: '100%', maxWidth: '640px', padding: '28px', maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-              <h3 style={{ fontSize: '1.15rem', fontWeight: 700 }}>Saved Workflows (SQLite)</h3>
-              <button
-                onClick={() => setShowHistoryModal(false)}
-                className="btn-secondary"
-                style={{ padding: '4px 10px' }}
-              >
-                ✕
-              </button>
-            </div>
-
-            <div style={{ overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {savedWorkflows.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted)' }}>
-                  No saved workflows yet. Generate a workflow and click &quot;Save Workflow&quot;.
-                </div>
-              ) : (
-                savedWorkflows.map((rec) => (
-                  <div
-                    key={rec.id}
-                    style={{
-                      padding: '14px',
-                      borderRadius: 'var(--radius-md)',
-                      backgroundColor: 'rgba(255, 255, 255, 0.03)',
-                      border: '1px solid var(--border-subtle)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{rec.name}</div>
-                      <div style={{ fontSize: '0.78rem', color: 'var(--text-dim)' }}>
-                        {new Date(rec.createdAt).toLocaleDateString()} • {rec.blueprint.nodes.length} nodes
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {validationReport.checksNotPerformed.map((chk, i) => (
+                          <span key={i} className="badge badge-neutral" style={{ fontSize: '0.66rem' }}>
+                            • {chk}
+                          </span>
+                        ))}
                       </div>
                     </div>
-                    <button
-                      onClick={() => handleLoadSaved(rec)}
-                      className="btn-primary"
-                      style={{ padding: '6px 14px', fontSize: '0.8rem' }}
-                    >
-                      Load
-                    </button>
                   </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+                )}
 
-      {/* Footer */}
-      <footer
-        style={{
-          borderTop: '1px solid var(--border-subtle)',
-          padding: '20px 0',
-          textAlign: 'center',
-          fontSize: '0.78rem',
-          color: 'var(--text-dim)',
-        }}
-      >
-        <div className="container">
-          AI-Powered n8n Workflow Builder • Deterministic Validation & Zero Hallucination Guarantee • Target n8n v1.70+
-        </div>
-      </footer>
+                {/* Tab 3: JSON */}
+                {activeTab === 'json' && workflowJson && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                        Official n8n v1 format · {workflowJson.nodes.length} nodes · Ready to paste directly into n8n canvas.
+                      </span>
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        <button
+                          type="button"
+                          onClick={() => handleCopy(formatN8nJsonString(workflowJson), 'json')}
+                          className="btn-secondary"
+                          style={{ fontSize: '0.72rem', padding: '4px 8px' }}
+                        >
+                          {copiedType === 'json' ? '✓ Copied!' : '📋 Copy JSON'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDownloadJson}
+                          className="btn-primary"
+                          style={{ fontSize: '0.72rem', padding: '4px 10px' }}
+                        >
+                          📥 Download File
+                        </button>
+                      </div>
+                    </div>
+                    <div className="code-container" style={{ maxHeight: '140px' }}>
+                      <pre>{formatN8nJsonString(workflowJson)}</pre>
+                    </div>
+                  </div>
+                )}
+
+                {/* Tab 4: Prompt */}
+                {activeTab === 'prompt' && generatedPrompt && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                        Optimized prompt constructed from identical canonical blueprint.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(generatedPrompt, 'prompt')}
+                        className="btn-secondary"
+                        style={{ fontSize: '0.72rem', padding: '4px 8px' }}
+                      >
+                        {copiedType === 'prompt' ? '✓ Copied!' : '📄 Copy Prompt'}
+                      </button>
+                    </div>
+                    <div className="code-container" style={{ maxHeight: '140px' }}>
+                      <pre>{generatedPrompt}</pre>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </main>
+      </div>
+
+      {/* Modals & Drawers */}
+      <SavedWorkflowsModal
+        isOpen={activeModal === 'saved'}
+        onClose={() => setActiveModal(null)}
+        workflows={savedWorkflows}
+        onLoadWorkflow={handleLoadSaved}
+        onDeleteWorkflow={handleDeleteSaved}
+      />
+
+      <TemplatesModal
+        isOpen={activeModal === 'templates'}
+        onClose={() => setActiveModal(null)}
+        onSelectTemplate={handleSelectTemplate}
+      />
+
+      <RegistryModal
+        isOpen={activeModal === 'registry'}
+        onClose={() => setActiveModal(null)}
+      />
     </div>
   );
 }

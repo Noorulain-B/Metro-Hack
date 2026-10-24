@@ -23,3 +23,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }
+
+export async function DELETE(request: Request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const id = searchParams.get('id');
+    if (!id) {
+      return NextResponse.json({ error: 'Missing workflow ID.' }, { status: 400 });
+    }
+    const repo = getWorkflowRepository();
+    const deleted = await repo.deleteWorkflow(id);
+    return NextResponse.json({ success: deleted });
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Failed to delete workflow.';
+    return NextResponse.json({ error: errorMessage }, { status: 500 });
+  }
+}
