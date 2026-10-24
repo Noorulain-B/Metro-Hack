@@ -2,88 +2,149 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { MockAiProvider } from '../src/lib/ai/mock-provider';
 import { validateWorkflowBlueprint } from '../src/lib/n8n/validator';
-import { generateN8nWorkflowJson } from '../src/lib/n8n/generator';
+import { generateN8nWorkflowJson, formatN8nJsonString } from '../src/lib/n8n/generator';
 import { generateOptimizedN8nPrompt } from '../src/lib/n8n/prompt-generator';
-import { isSupportedNodeType } from '../src/lib/n8n/registry';
+import { isSupportedNodeType, isVersionSupported, validateNodeParameters } from '../src/lib/n8n/registry';
 import { WorkflowBlueprint } from '../src/lib/schemas/blueprint';
 
-describe('Sample Request Regression Test: Gmail Support Classifier & Urgent Slack Alert', () => {
+describe('Sample Request Regression Test: Full-Fidelity Customer Support Triage', () => {
   const provider = new MockAiProvider();
   const samplePrompt = 'When a new customer email arrives, classify its sentiment and urgency, then notify the support team in Slack.';
 
-  test('Produces genuinely correct workflow with real Gmail trigger, Gemini-powered AI agent, urgency branch, and Slack alert', async () => {
+  test('Implements complete customer support workflow with real Gmail trigger, sentiment, urgency, customer extraction, and 3-way routing', async () => {
     // 1. Analyze requirement
     const { requirement } = await provider.analyzeRequirement(samplePrompt);
     assert.equal(requirement.triggerType, 'email');
     assert.equal(requirement.hasAiAgent, true);
 
-    // 2. Generate blueprint
+    // 2. Generate canonical blueprint
     const { blueprint } = await provider.generateBlueprint(requirement, { targetN8nVersion: '1.70.0' });
 
-    // Regression Check A: First node must be verified Gmail Trigger (NO silent webhook substitution!)
+    // --- Requirement Check 1: Real Gmail Trigger (NO silent webhook substitution) ---
     const triggerNode = blueprint.nodes.find((n) => n.id === 'node_trigger');
     assert.ok(triggerNode, 'Trigger node must exist');
-    assert.equal(
-      triggerNode.type,
-      'n8n-nodes-base.gmailTrigger',
-      'First node MUST be n8n-nodes-base.gmailTrigger, NOT a substituted webhook'
-    );
+    assert.equal(triggerNode.type, 'n8n-nodes-base.gmailTrigger', 'First node MUST be n8n-nodes-base.gmailTrigger');
     assert.notEqual(triggerNode.type, 'n8n-nodes-base.webhook');
     assert.equal(triggerNode.credentials?.gmailOAuth2, '[CONFIGURE_CREDENTIAL: gmailOAuth2]');
 
-    // Regression Check B: All nodes in the blueprint must be officially supported in registry
+    // --- Requirement Check 2 & 3: Sentiment & Urgency Levels ---
+    const agentNode = blueprint.nodes.find((n) => n.type === '@n8n/n8n-nodes-langchain.agent');
+    assert.ok(agentNode, 'AI Agent node must exist');
+    const agentSystemMessage = (agentNode.parameters.options as { systemMessage?: string })?.systemMessage || '';
+    
+    // Positive, neutral, negative sentiment
+    assert.ok(agentSystemMessage.includes('positive') && agentSystemMessage.includes('neutral') && agentSystemMessage.includes('negative'),
+      'AI Agent must instruct model to classify into positive, neutral, and negative sentiment');
+    
+    // Urgency levels low, medium, high, and critical
+    assert.ok(
+      agentSystemMessage.includes('low') &&
+      agentSystemMessage.includes('medium') &&
+      agentSystemMessage.includes('high') &&
+      agentSystemMessage.includes('critical'),
+      'AI Agent must instruct model to classify urgency into low, medium, high, and critical'
+    );
+
+    // --- Requirement Check 4: Extraction of Customer Name, Email, Category, Summary, Action ---
+    assert.ok(agentSystemMessage.includes('customerName'), 'Must extract customerName');
+    assert.ok(agentSystemMessage.includes('customerEmail'), 'Must extract customerEmail');
+    assert.ok(agentSystemMessage.includes('issueCategory'), 'Must extract issueCategory');
+    assert.ok(agentSystemMessage.includes('summary'), 'Must extract summary');
+    assert.ok(agentSystemMessage.includes('recommendedAction'), 'Must extract recommendedAction');
+
+    // --- Requirement Check 5: High/Critical Branch -> High Priority Slack Notification ---
+    const highPrioritySlack = blueprint.nodes.find((n) => n.id === 'node_slack_high_priority');
+    assert.ok(highPrioritySlack, 'High-priority Slack alert node must exist');
+    const highSlackText = (highPrioritySlack.parameters.text as string) || '';
+    assert.ok(highSlackText.includes('HIGH / CRITICAL'), 'High-priority Slack message must indicate high/critical priority');
+    assert.ok(highSlackText.includes('Customer:'), 'High-priority Slack message must contain Customer');
+    assert.ok(highSlackText.includes('Issue Category:'), 'High-priority Slack message must contain Issue Category');
+    assert.ok(highSlackText.includes('Sentiment:'), 'High-priority Slack message must contain Sentiment');
+    assert.ok(highSlackText.includes('Urgency Level:'), 'High-priority Slack message must contain Urgency Level');
+    assert.ok(highSlackText.includes('Summary:'), 'High-priority Slack message must contain Summary');
+    assert.ok(highSlackText.includes('Recommended Next Action:'), 'High-priority Slack message must contain Recommended Next Action');
+
+    // --- Requirement Check 6: Low/Medium Branch -> Normal Priority Slack Notification ---
+    const normalPrioritySlack = blueprint.nodes.find((n) => n.id === 'node_slack_normal_priority');
+    assert.ok(normalPrioritySlack, 'Normal-priority Slack notification node must exist');
+    const normalSlackText = (normalPrioritySlack.parameters.text as string) || '';
+    assert.ok(normalSlackText.includes('Standard Support Ticket'), 'Normal-priority Slack message must indicate standard priority');
+    assert.ok(normalSlackText.includes('Customer:'), 'Normal-priority Slack message must contain Customer');
+    assert.ok(normalSlackText.includes('Issue Category:'), 'Normal-priority Slack message must contain Issue Category');
+    assert.ok(normalSlackText.includes('Sentiment:'), 'Normal-priority Slack message must contain Sentiment');
+    assert.ok(normalSlackText.includes('Urgency Level:'), 'Normal-priority Slack message must contain Urgency Level');
+    assert.ok(normalSlackText.includes('Summary:'), 'Normal-priority Slack message must contain Summary');
+    assert.ok(normalSlackText.includes('Recommended Next Action:'), 'Normal-priority Slack message must contain Recommended Next Action');
+
+    // --- Requirement Check 7: Uncertain/Failed Path -> Manual Review ---
+    const manualReviewSlack = blueprint.nodes.find((n) => n.id === 'node_slack_manual_review');
+    assert.ok(manualReviewSlack, 'Manual review Slack node must exist for uncertain or failed classifications');
+    const manualSlackText = (manualReviewSlack.parameters.text as string) || '';
+    assert.ok(manualSlackText.includes('Manual Review Required'), 'Manual review Slack text must state manual review is required');
+
+    // --- Requirement Check 8: Error Handling on AI Classification ---
+    const agentOptions = agentNode.parameters.options as { continueOnFail?: boolean };
+    assert.equal(agentOptions?.continueOnFail, true, 'AI Agent must have continueOnFail enabled for safe error handling');
+
+    // --- Requirement Check 9: Safety Guardrail - No Automatic Replies to Customers ---
+    const hasOutboundEmailNode = blueprint.nodes.some(
+      (n) => n.type === 'n8n-nodes-base.gmail' && n.parameters.operation === 'send'
+    );
+    assert.equal(hasOutboundEmailNode, false, 'STRICT GUARDRAIL: Workflow must NOT contain any automatic customer email send node');
+    assert.ok(agentSystemMessage.includes('Do NOT send any automatic email replies'), 'Agent prompt must explicitly forbid automatic email replies');
+
+    // --- Connection Topology Verification ---
+    // 1. Trigger -> Format Data
+    assert.ok(blueprint.connections.some((c) => c.fromNodeId === 'node_trigger' && c.toNodeId === 'node_format_data'));
+    // 2. Format Data -> AI Agent
+    assert.ok(blueprint.connections.some((c) => c.fromNodeId === 'node_format_data' && c.toNodeId === 'node_ai_agent'));
+    // 3. Gemini Model -> AI Agent (ai_languageModel)
+    assert.ok(blueprint.connections.some((c) => c.fromNodeId === 'node_gemini_model' && c.toNodeId === 'node_ai_agent' && c.fromOutputType === 'ai_languageModel'));
+    // 4. AI Agent -> If Valid
+    assert.ok(blueprint.connections.some((c) => c.fromNodeId === 'node_ai_agent' && c.toNodeId === 'node_if_valid'));
+    // 5. If Valid Output 1 (False/Uncertain) -> Manual Review Slack
+    assert.ok(blueprint.connections.some((c) => c.fromNodeId === 'node_if_valid' && c.fromOutputIndex === 1 && c.toNodeId === 'node_slack_manual_review'));
+    // 6. If Valid Output 0 (True/Valid) -> If Urgency
+    assert.ok(blueprint.connections.some((c) => c.fromNodeId === 'node_if_valid' && c.fromOutputIndex === 0 && c.toNodeId === 'node_if_urgency'));
+    // 7. If Urgency Output 0 (True/High/Critical) -> High Priority Slack
+    assert.ok(blueprint.connections.some((c) => c.fromNodeId === 'node_if_urgency' && c.fromOutputIndex === 0 && c.toNodeId === 'node_slack_high_priority'));
+    // 8. If Urgency Output 1 (False/Low/Medium) -> Normal Priority Slack
+    assert.ok(blueprint.connections.some((c) => c.fromNodeId === 'node_if_urgency' && c.fromOutputIndex === 1 && c.toNodeId === 'node_slack_normal_priority'));
+
+    // --- Node Registry Verification for Every Node ---
     for (const node of blueprint.nodes) {
       assert.ok(isSupportedNodeType(node.type), `Node "${node.name}" (${node.type}) must be in verified registry`);
+      assert.ok(isVersionSupported(node.type, node.typeVersion), `Node "${node.name}" v${node.typeVersion} must be supported`);
+      const paramCheck = validateNodeParameters(node.type, node.parameters);
+      assert.ok(paramCheck.valid, `Node "${node.name}" missing required params: ${paramCheck.missingRequired.join(', ')}`);
     }
 
-    // Regression Check C: AI Agent is connected to Gemini Model
-    const agentNode = blueprint.nodes.find((n) => n.type === '@n8n/n8n-nodes-langchain.agent');
-    const geminiNode = blueprint.nodes.find((n) => n.type === '@n8n/n8n-nodes-langchain.lmChatGoogleGemini');
-    assert.ok(agentNode, 'AI Agent node must be present');
-    assert.ok(geminiNode, 'Gemini Chat Model node must be present');
-
-    const modelConnection = blueprint.connections.find(
-      (c) => c.fromNodeId === geminiNode.id && c.toNodeId === agentNode.id && c.fromOutputType === 'ai_languageModel'
-    );
-    assert.ok(modelConnection, 'Gemini Model must connect to AI Agent via ai_languageModel socket');
-
-    // Regression Check D: Urgency condition branch (If node) must be implemented
-    const ifNode = blueprint.nodes.find((n) => n.type === 'n8n-nodes-base.if');
-    assert.ok(ifNode, 'Urgency condition (n8n-nodes-base.if) must NOT be omitted');
-
-    // Regression Check E: Slack action node receives classification, urgency, summary, and action
-    const slackNode = blueprint.nodes.find((n) => n.type === 'n8n-nodes-base.slack');
-    assert.ok(slackNode, 'Slack notification node must exist');
-    const slackText = (slackNode.parameters.text as string) || '';
-    assert.ok(slackText.includes('Classification'), 'Slack text must include Classification/Sentiment');
-    assert.ok(slackText.includes('Urgency'), 'Slack text must include Urgency Level');
-    assert.ok(slackText.includes('Summary'), 'Slack text must include Summary');
-    assert.ok(slackText.includes('Recommended Next Action'), 'Slack text must include Recommended Next Action');
-
-    // Regression Check F: Slack is connected to True branch (Output 0) of the If node
-    const ifToSlackConn = blueprint.connections.find(
-      (c) => c.fromNodeId === ifNode.id && c.toNodeId === slackNode.id && c.fromOutputIndex === 0
-    );
-    assert.ok(ifToSlackConn, 'Slack must be connected to True branch (Output index 0) of If node');
-
-    // Regression Check G: Validation must pass and must declare checks not performed
+    // --- Validator Verification ---
     const validationReport = validateWorkflowBlueprint(blueprint, requirement);
-    assert.equal(validationReport.valid, true);
+    assert.equal(validationReport.valid, true, 'Validation must pass for complete workflow');
     assert.equal(validationReport.errors.length, 0);
-    assert.ok(validationReport.checksNotPerformed.length >= 3, 'Must explicitly declare checks not performed');
+    assert.ok(validationReport.checksNotPerformed.length >= 3, 'Must explicitly state unperformed runtime checks');
 
-    // Regression Check H: Outputs derived from same blueprint
+    // --- Dual Output Verification from SAME Approved Blueprint ---
     const jsonOutput = generateN8nWorkflowJson(blueprint);
     const promptOutput = generateOptimizedN8nPrompt(blueprint);
 
     assert.equal(jsonOutput.nodes.length, blueprint.nodes.length);
     assert.ok(promptOutput.includes('n8n-nodes-base.gmailTrigger'));
-    assert.ok(promptOutput.includes('n8n-nodes-base.if'));
-    assert.ok(promptOutput.includes('n8n-nodes-base.slack'));
+    assert.ok(promptOutput.includes('node_slack_manual_review') || promptOutput.includes('Alert Manual Review Team'));
+    assert.ok(promptOutput.includes('node_slack_high_priority') || promptOutput.includes('High Priority Slack Alert'));
+    assert.ok(promptOutput.includes('node_slack_normal_priority') || promptOutput.includes('Normal Priority Slack Notification'));
+
+    // --- Security & Secret Leaks Check on Exported JSON ---
+    const jsonString = formatN8nJsonString(jsonOutput);
+    const parsedBack = JSON.parse(jsonString);
+    assert.equal(parsedBack.nodes.length, 9, 'Exported JSON must contain all 9 nodes');
+    assert.equal(/sk-[a-zA-Z0-9]{20,}/.test(jsonString), false);
+    assert.equal(/xoxb-[0-9]{10,}/.test(jsonString), false);
+    assert.equal(/AIza[0-9A-Za-z-_]{35}/.test(jsonString), false);
   });
 
   test('Validator detects and FAILS if webhook is substituted for Gmail trigger', () => {
-    // Clone blueprint and maliciously substitute webhook
     const faultyBlueprint: WorkflowBlueprint = {
       id: 'bp_faulty_sub',
       name: 'Faulty Substituted Workflow',
@@ -96,7 +157,7 @@ describe('Sample Request Regression Test: Gmail Support Classifier & Urgent Slac
         {
           id: 'node_trigger',
           name: 'Webhook Trigger',
-          type: 'n8n-nodes-base.webhook', // Substituted!
+          type: 'n8n-nodes-base.webhook',
           typeVersion: 2,
           parameters: { httpMethod: 'POST', path: 'test' },
           disabled: false,

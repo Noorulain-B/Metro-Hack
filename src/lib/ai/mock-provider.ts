@@ -181,12 +181,16 @@ export class MockAiProvider implements AiProvider {
         fields: {
           values: [
             { name: 'receivedAt', stringValue: '={{ $now.toISO() }}' },
-            { name: 'rawPayload', stringValue: '={{ $json.body || $json.snippet || $json }}' },
+            { name: 'customerName', stringValue: '={{ $json.from?.value?.[0]?.name || $json.from?.text || "Valued Customer" }}' },
+            { name: 'customerEmail', stringValue: '={{ $json.from?.value?.[0]?.address || $json.from?.text || "customer@example.com" }}' },
+            { name: 'subject', stringValue: '={{ $json.subject || "(No Subject)" }}' },
+            { name: 'body', stringValue: '={{ $json.textPlain || $json.snippet || "" }}' },
+            { name: 'rawPayload', stringValue: '={{ $json.textPlain || $json.snippet || $json.subject || $json }}' },
           ],
         },
         options: {},
       },
-      notes: 'Normalizes and structures incoming payload data',
+      notes: 'Normalizes incoming email payload with customer name, email address, subject, and body',
       disabled: false,
     });
 
@@ -212,13 +216,14 @@ export class MockAiProvider implements AiProvider {
         typeVersion: agentDef.defaultVersion,
         parameters: {
           promptType: 'auto',
-          text: '={{ $json.rawPayload }}',
+          text: '=Customer Name: {{ $json.customerName }}\nCustomer Email: {{ $json.customerEmail }}\nSubject: {{ $json.subject }}\nBody: {{ $json.body }}',
           options: {
             systemMessage:
-              'You are an expert customer support triage assistant. Analyze incoming customer emails and return a structured JSON response containing: 1) sentiment (positive, neutral, negative), 2) urgency (high, medium, low), 3) summary (concise overview of issue), and 4) recommendedAction (suggested immediate next action for the support team).',
+              'You are an expert customer support email classification agent.\nAnalyze the incoming customer email and output a strict JSON object with these fields:\n1) customerName: string (extracted from sender headers or email signature)\n2) customerEmail: string (customer email address)\n3) issueCategory: string ("billing" | "technical_support" | "account_access" | "feature_request" | "general_inquiry")\n4) sentiment: string ("positive" | "neutral" | "negative")\n5) urgency: string ("low" | "medium" | "high" | "critical")\n6) summary: string (concise 1-2 sentence overview of the issue)\n7) recommendedAction: string (suggested immediate next action for support engineers)\n8) confidenceScore: number (0.0 to 1.0)\n9) isUncertain: boolean (set to true if email is ambiguous, incomplete, or confidence is below 0.70)\n\nSTRICT SAFETY GUARDRAIL: Do NOT send any automatic email replies to customers. This automation performs internal triage and team notification only.',
+            continueOnFail: true,
           },
         },
-        notes: 'Classifies customer email sentiment and urgency, extracts summary, and determines recommended next action',
+        notes: 'Classifies customer email sentiment (positive/neutral/negative) and urgency (low/medium/high/critical), extracts customer details and next action, and includes fallback error handling',
         disabled: false,
       });
 
@@ -268,18 +273,25 @@ export class MockAiProvider implements AiProvider {
       requirement.userGoal.toLowerCase().includes('slack');
 
     if (wantsSlack) {
-      // 4A. If urgency condition is required, insert an If branch
       const goalLower = requirement.userGoal.toLowerCase();
       const requiresUrgencyCheck =
         goalLower.includes('urgency') ||
         goalLower.includes('urgent') ||
-        goalLower.includes('priority');
+        goalLower.includes('priority') ||
+        goalLower.includes('classify');
 
-      if (requiresUrgencyCheck) {
+      if (requiresUrgencyCheck && requirement.hasAiAgent) {
+        // Multi-branch triage routing:
+        // Branch 1: High/Critical urgency -> High Priority Slack Alert (#support-urgent)
+        // Branch 2: Low/Medium urgency -> Normal Priority Slack Notification (#support-triage)
+        // Branch 3: Uncertain or failed classification -> Manual Review Slack Alert (#support-manual-review)
         const ifDef = VERIFIED_N8N_NODES['n8n-nodes-base.if'];
+        const slackDef = VERIFIED_N8N_NODES['n8n-nodes-base.slack'];
+
+        // Node 5: Check If Classification Valid
         nodes.push({
-          id: 'node_if_urgent',
-          name: 'Check If High Urgency',
+          id: 'node_if_valid',
+          name: 'Check If Classification Valid',
           type: ifDef.nodeType,
           typeVersion: ifDef.defaultVersion,
           parameters: {
@@ -291,18 +303,26 @@ export class MockAiProvider implements AiProvider {
               },
               conditions: [
                 {
-                  leftValue: '={{ $json.output?.urgency || $json.urgency || "high" }}',
-                  rightValue: 'high',
+                  leftValue: '={{ $json.output?.urgency || $json.urgency }}',
+                  rightValue: '',
                   operator: {
                     type: 'string',
-                    operation: 'equals',
+                    operation: 'notEmpty',
+                  },
+                },
+                {
+                  leftValue: '={{ String($json.output?.isUncertain || $json.isUncertain || false) }}',
+                  rightValue: 'true',
+                  operator: {
+                    type: 'string',
+                    operation: 'notEquals',
                   },
                 },
               ],
               combinator: 'and',
             },
           },
-          notes: 'Evaluates whether the triage urgency equals "high" before alerting the support team',
+          notes: 'Evaluates whether AI classification succeeded and is certain; routes uncertain or failed items to manual review',
           disabled: false,
         });
 
@@ -310,47 +330,190 @@ export class MockAiProvider implements AiProvider {
           fromNodeId: previousNodeId,
           fromOutputIndex: 0,
           fromOutputType: 'main' as const,
-          toNodeId: 'node_if_urgent',
+          toNodeId: 'node_if_valid',
           toInputIndex: 0,
           toInputType: 'main' as const,
         });
 
-        previousNodeId = 'node_if_urgent';
-      }
-
-      // 4B. Send Slack Notification on True Branch (Output index 0)
-      const slackDef = VERIFIED_N8N_NODES['n8n-nodes-base.slack'];
-      nodes.push({
-        id: 'node_slack_alert',
-        name: 'Send Slack Notification',
-        type: slackDef.nodeType,
-        typeVersion: slackDef.defaultVersion,
-        parameters: {
-          resource: 'message',
-          operation: 'post',
-          select: 'channel',
-          channelId: {
-            __rl: true,
-            value: options?.previousClarifications?.q_slack_channel || '#support-urgent',
-            mode: 'name',
+        // Node 6: Check If High or Critical Urgency (connected from node_if_valid Output 0 - True branch)
+        nodes.push({
+          id: 'node_if_urgency',
+          name: 'Check If High or Critical Urgency',
+          type: ifDef.nodeType,
+          typeVersion: ifDef.defaultVersion,
+          parameters: {
+            conditions: {
+              options: {
+                caseSensitive: false,
+                leftValue: '',
+                typeValidation: 'strict',
+              },
+              conditions: [
+                {
+                  leftValue: '={{ ($json.output?.urgency || $json.urgency || "").toLowerCase() }}',
+                  rightValue: 'high',
+                  operator: {
+                    type: 'string',
+                    operation: 'equals',
+                  },
+                },
+                {
+                  leftValue: '={{ ($json.output?.urgency || $json.urgency || "").toLowerCase() }}',
+                  rightValue: 'critical',
+                  operator: {
+                    type: 'string',
+                    operation: 'equals',
+                  },
+                },
+              ],
+              combinator: 'or',
+            },
           },
-          text: `*[🚨 Urgent Customer Support Alert]*\n• *Classification / Sentiment:* ={{ $json.output?.sentiment || 'Negative' }}\n• *Urgency Level:* ={{ $json.output?.urgency || 'High' }}\n• *Summary:* ={{ $json.output?.summary || $json.snippet || 'Customer email requiring prompt attention' }}\n• *Recommended Next Action:* ={{ $json.output?.recommendedAction || 'Escalate to on-call tier 2 support engineer' }}`,
-        },
-        credentials: {
-          slackApi: '[CONFIGURE_CREDENTIAL: slackApi]',
-        },
-        notes: 'Delivers high-priority alert with classification, urgency, summary, and action to Slack',
-        disabled: false,
-      });
+          notes: 'Splits urgent tickets (high or critical) from standard tickets (low or medium)',
+          disabled: false,
+        });
 
-      connections.push({
-        fromNodeId: previousNodeId,
-        fromOutputIndex: 0, // Output 0 of If node is the True (Urgent) branch
-        fromOutputType: 'main' as const,
-        toNodeId: 'node_slack_alert',
-        toInputIndex: 0,
-        toInputType: 'main' as const,
-      });
+        connections.push({
+          fromNodeId: 'node_if_valid',
+          fromOutputIndex: 0, // Output 0 = True (Valid classification)
+          fromOutputType: 'main' as const,
+          toNodeId: 'node_if_urgency',
+          toInputIndex: 0,
+          toInputType: 'main' as const,
+        });
+
+        // Node 7: Manual Review Slack Alert (connected from node_if_valid Output 1 - False / Uncertain / Error branch)
+        nodes.push({
+          id: 'node_slack_manual_review',
+          name: 'Alert Manual Review Team',
+          type: slackDef.nodeType,
+          typeVersion: slackDef.defaultVersion,
+          parameters: {
+            resource: 'message',
+            operation: 'post',
+            select: 'channel',
+            channelId: {
+              __rl: true,
+              value: '#support-manual-review',
+              mode: 'name',
+            },
+            text: `*[⚠️ Manual Review Required: Triage Uncertainty or AI Failure]*\n• *Customer:* ={{ $json.customerName || 'Unknown Customer' }} (={{ $json.customerEmail || 'No Email' }})\n• *Subject:* ={{ $json.subject || '(No Subject)' }}\n• *Status:* AI classification was uncertain (confidence: ={{ $json.output?.confidenceScore || 'low' }}) or encountered an error.\n• *Raw Snippet:* ={{ $json.snippet || $json.body || $json.rawPayload }}\n• *Action Required:* Please manually inspect, classify, and assign this customer ticket.\n• *Note:* No automated response was sent to the customer.`,
+          },
+          credentials: {
+            slackApi: '[CONFIGURE_CREDENTIAL: slackApi]',
+          },
+          notes: 'Alerts human support team to review unclassified or uncertain emails',
+          disabled: false,
+        });
+
+        connections.push({
+          fromNodeId: 'node_if_valid',
+          fromOutputIndex: 1, // Output 1 = False (Uncertain or Failed classification)
+          fromOutputType: 'main' as const,
+          toNodeId: 'node_slack_manual_review',
+          toInputIndex: 0,
+          toInputType: 'main' as const,
+        });
+
+        // Node 8: High Priority Slack Alert (connected from node_if_urgency Output 0 - True / High or Critical branch)
+        nodes.push({
+          id: 'node_slack_high_priority',
+          name: 'High Priority Slack Alert',
+          type: slackDef.nodeType,
+          typeVersion: slackDef.defaultVersion,
+          parameters: {
+            resource: 'message',
+            operation: 'post',
+            select: 'channel',
+            channelId: {
+              __rl: true,
+              value: options?.previousClarifications?.q_slack_channel || '#support-urgent',
+              mode: 'name',
+            },
+            text: `*[🚨 HIGH / CRITICAL Support Alert]*\n• *Customer:* ={{ $json.output?.customerName || $json.customerName || 'Customer' }} (={{ $json.output?.customerEmail || $json.customerEmail || 'No Email' }})\n• *Issue Category:* ={{ $json.output?.issueCategory || 'General' }}\n• *Classification / Sentiment:* ={{ $json.output?.sentiment || 'Negative' }}\n• *Urgency Level:* ={{ $json.output?.urgency || 'High' }}\n• *Summary:* ={{ $json.output?.summary || $json.snippet || 'High priority customer issue requiring immediate escalation' }}\n• *Recommended Next Action:* ={{ $json.output?.recommendedAction || 'Escalate to on-call support team immediately' }}\n• *Note:* Internal notification only; no customer reply sent.`,
+          },
+          credentials: {
+            slackApi: '[CONFIGURE_CREDENTIAL: slackApi]',
+          },
+          notes: 'Delivers high-priority alert for high or critical tickets to #support-urgent',
+          disabled: false,
+        });
+
+        connections.push({
+          fromNodeId: 'node_if_urgency',
+          fromOutputIndex: 0, // Output 0 = True (High or Critical)
+          fromOutputType: 'main' as const,
+          toNodeId: 'node_slack_high_priority',
+          toInputIndex: 0,
+          toInputType: 'main' as const,
+        });
+
+        // Node 9: Normal Priority Slack Notification (connected from node_if_urgency Output 1 - False / Low or Medium branch)
+        nodes.push({
+          id: 'node_slack_normal_priority',
+          name: 'Normal Priority Slack Notification',
+          type: slackDef.nodeType,
+          typeVersion: slackDef.defaultVersion,
+          parameters: {
+            resource: 'message',
+            operation: 'post',
+            select: 'channel',
+            channelId: {
+              __rl: true,
+              value: '#support-triage',
+              mode: 'name',
+            },
+            text: `*[📋 Standard Support Ticket]*\n• *Customer:* ={{ $json.output?.customerName || $json.customerName || 'Customer' }} (={{ $json.output?.customerEmail || $json.customerEmail || 'No Email' }})\n• *Issue Category:* ={{ $json.output?.issueCategory || 'General' }}\n• *Classification / Sentiment:* ={{ $json.output?.sentiment || 'Neutral' }}\n• *Urgency Level:* ={{ $json.output?.urgency || 'Low / Medium' }}\n• *Summary:* ={{ $json.output?.summary || $json.snippet || 'Standard support enquiry' }}\n• *Recommended Next Action:* ={{ $json.output?.recommendedAction || 'Queue for standard business hours response' }}\n• *Note:* Internal notification only; no customer reply sent.`,
+          },
+          credentials: {
+            slackApi: '[CONFIGURE_CREDENTIAL: slackApi]',
+          },
+          notes: 'Delivers standard notification for low or medium tickets to #support-triage',
+          disabled: false,
+        });
+
+        connections.push({
+          fromNodeId: 'node_if_urgency',
+          fromOutputIndex: 1, // Output 1 = False (Low or Medium)
+          fromOutputType: 'main' as const,
+          toNodeId: 'node_slack_normal_priority',
+          toInputIndex: 0,
+          toInputType: 'main' as const,
+        });
+      } else {
+        const slackDef = VERIFIED_N8N_NODES['n8n-nodes-base.slack'];
+        nodes.push({
+          id: 'node_slack_alert',
+          name: 'Send Slack Notification',
+          type: slackDef.nodeType,
+          typeVersion: slackDef.defaultVersion,
+          parameters: {
+            resource: 'message',
+            operation: 'post',
+            select: 'channel',
+            channelId: {
+              __rl: true,
+              value: options?.previousClarifications?.q_slack_channel || '#alerts',
+              mode: 'name',
+            },
+            text: `*[Automated Alert]*\n${requirement.title}\nStatus: Completed successfully.`,
+          },
+          credentials: {
+            slackApi: '[CONFIGURE_CREDENTIAL: slackApi]',
+          },
+          notes: 'Posts a formatted status message to Slack',
+          disabled: false,
+        });
+
+        connections.push({
+          fromNodeId: previousNodeId,
+          fromOutputIndex: 0,
+          fromOutputType: 'main' as const,
+          toNodeId: 'node_slack_alert',
+          toInputIndex: 0,
+          toInputType: 'main' as const,
+        });
+      }
     } else if (requirement.integrations.includes('gmail')) {
       const gmailDef = VERIFIED_N8N_NODES['n8n-nodes-base.gmail'];
       nodes.push({
@@ -423,13 +586,23 @@ export class MockAiProvider implements AiProvider {
       targetN8nVersion: targetVersion,
       assumptions: [
         `Targeting n8n baseline version ${targetVersion}`,
-        'Incoming payload contains structured JSON or plain text body',
+        'Gmail Trigger polls for new unread customer messages using Google OAuth2',
+        'AI Agent classifies sentiment (positive, neutral, negative) and urgency (low, medium, high, critical)',
+        'AI Agent extracts customer name, customer email, issue category, summary, and recommended action with fallback error handling',
+        'High and critical urgency tickets route to #support-urgent for immediate escalation',
+        'Low and medium urgency tickets route to #support-triage for standard queue handling',
+        'Uncertain classifications and AI errors route to #support-manual-review for human agent inspection',
+        'Strict safety guardrail: no automated email replies are sent to customers (internal triage and Slack alerts only)',
         'Credentials are to be configured in user n8n instance via credential placeholders',
       ],
       unresolvedIssues: [
-        'User must supply actual credential tokens (e.g. Slack bot token, Gmail OAuth) upon import',
+        'User must supply actual credential tokens (Slack bot token, Gmail OAuth, Google Palm API) upon import',
+        'Target Slack channels (#support-urgent, #support-triage, #support-manual-review) must exist or be mapped in n8n',
       ],
       expectedOutputs: [
+        'High/Critical priority Slack notification posted to #support-urgent',
+        'Standard priority Slack notification posted to #support-triage',
+        'Manual review Slack notification posted to #support-manual-review for uncertain/failed classifications',
         'Validated n8n workflow JSON ready for manual import',
         'Optimized prompt for manual AI refinement',
       ],

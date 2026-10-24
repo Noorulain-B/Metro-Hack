@@ -60,8 +60,23 @@ export function generateN8nWorkflowJson(blueprint: WorkflowBlueprint): N8nWorkfl
 
     // Sub-nodes (like Language Models or Tools attached to AI agents) are positioned beneath the agent
     if (node.type.startsWith('@n8n/n8n-nodes-langchain.lmChat')) {
-      x = Math.max(240, x - 180);
+      x = 760;
       y = 520;
+    } else if (node.id === 'node_if_valid') {
+      x = 1040;
+      y = 300;
+    } else if (node.id === 'node_slack_manual_review') {
+      x = 1320;
+      y = 500;
+    } else if (node.id === 'node_if_urgency') {
+      x = 1320;
+      y = 200;
+    } else if (node.id === 'node_slack_high_priority') {
+      x = 1600;
+      y = 120;
+    } else if (node.id === 'node_slack_normal_priority') {
+      x = 1600;
+      y = 280;
     }
 
     const n8nNode: N8nWorkflowNode = {
