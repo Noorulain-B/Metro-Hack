@@ -458,6 +458,118 @@ export const VERIFIED_N8N_NODES: Record<string, SmartNodeDefinition> = {
     documentationUrl: 'https://docs.n8n.io/integrations/builtin/cluster-nodes/sub-nodes/n8n-nodes-langchain.lmchatopenai/',
     isAiNode: true,
   }),
+  // 13. Google Sheets Trigger
+  'n8n-nodes-base.googleSheetsTrigger': SmartNodeDefinitionSchema.parse({
+    nodeType: 'n8n-nodes-base.googleSheetsTrigger',
+    displayName: 'Google Sheets Trigger',
+    category: 'trigger',
+    supportedVersions: [1],
+    defaultVersion: 1,
+    description: 'Triggers when a new row is added or updated in a Google Sheet.',
+    inputs: [],
+    outputs: ['main'],
+    defaultParameters: {
+      event: 'rowAdded',
+      documentId: {
+        __rl: true,
+        value: '',
+        mode: 'id',
+      },
+      sheetName: {
+        __rl: true,
+        value: '',
+        mode: 'name',
+      },
+    },
+    parameters: [
+      {
+        name: 'event',
+        displayName: 'Event',
+        type: 'options',
+        default: 'rowAdded',
+        required: true,
+        options: [
+          { name: 'Row Added', value: 'rowAdded' },
+          { name: 'Row Updated', value: 'rowUpdated' },
+        ],
+      },
+      {
+        name: 'documentId',
+        displayName: 'Document',
+        type: 'string',
+        default: '',
+        required: true,
+      },
+      {
+        name: 'sheetName',
+        displayName: 'Sheet',
+        type: 'string',
+        default: '',
+        required: true,
+      },
+    ],
+    requiredParameters: ['event', 'documentId', 'sheetName'],
+    credentialsRequired: 'googleSheetsOAuth2',
+    documentationUrl: 'https://docs.n8n.io/integrations/builtin/app-nodes/n8n-nodes-base.googlesheetstrigger/',
+    isAiNode: false,
+  }),
+
+  // 14. Google Sheets Action
+  'n8n-nodes-base.googleSheets': SmartNodeDefinitionSchema.parse({
+    nodeType: 'n8n-nodes-base.googleSheets',
+    displayName: 'Google Sheets',
+    category: 'action',
+    supportedVersions: [4, 4.5],
+    defaultVersion: 4.5,
+    description: 'Reads, appends, and updates rows in a Google Sheet spreadsheet.',
+    inputs: ['main'],
+    outputs: ['main'],
+    defaultParameters: {
+      operation: 'append',
+      documentId: {
+        __rl: true,
+        value: '',
+        mode: 'id',
+      },
+      sheetName: {
+        __rl: true,
+        value: '',
+        mode: 'name',
+      },
+    },
+    parameters: [
+      {
+        name: 'operation',
+        displayName: 'Operation',
+        type: 'options',
+        default: 'append',
+        required: true,
+        options: [
+          { name: 'Append Row', value: 'append' },
+          { name: 'Read Rows', value: 'read' },
+          { name: 'Update Row', value: 'update' },
+        ],
+      },
+      {
+        name: 'documentId',
+        displayName: 'Document',
+        type: 'string',
+        default: '',
+        required: true,
+      },
+      {
+        name: 'sheetName',
+        displayName: 'Sheet',
+        type: 'string',
+        default: '',
+        required: true,
+      },
+    ],
+    requiredParameters: ['operation', 'documentId', 'sheetName'],
+    credentialsRequired: 'googleSheetsOAuth2',
+    documentationUrl: 'https://docs.n8n.io/integrations/builtin/app-nodes/n8n-nodes-base.googlesheets/',
+    isAiNode: false,
+  }),
 };
 
 /**
@@ -471,6 +583,34 @@ export function isSupportedNodeType(nodeType: string): boolean {
   return nodeType in VERIFIED_N8N_NODES;
 }
 
+export function isVersionSupported(nodeType: string, version: number): boolean {
+  const definition = getNodeDefinition(nodeType);
+  if (!definition) return false;
+  return definition.supportedVersions.includes(version);
+}
+
+export function validateNodeParameters(
+  nodeType: string,
+  parameters: Record<string, unknown>
+): { valid: boolean; missingRequired: string[] } {
+  const definition = getNodeDefinition(nodeType);
+  if (!definition) {
+    return { valid: false, missingRequired: ['UNKNOWN_NODE_TYPE'] };
+  }
+
+  const missingRequired: string[] = [];
+  for (const reqParam of definition.requiredParameters) {
+    if (parameters[reqParam] === undefined || parameters[reqParam] === null || parameters[reqParam] === '') {
+      missingRequired.push(reqParam);
+    }
+  }
+
+  return {
+    valid: missingRequired.length === 0,
+    missingRequired,
+  };
+}
+
 export function getAllNodeDefinitions(): SmartNodeDefinition[] {
   return Object.values(VERIFIED_N8N_NODES);
 }
@@ -478,3 +618,4 @@ export function getAllNodeDefinitions(): SmartNodeDefinition[] {
 export function getNodesByCategory(category: NodeCategory): SmartNodeDefinition[] {
   return getAllNodeDefinitions().filter((node) => node.category === category);
 }
+

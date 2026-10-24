@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   getNodeDefinition,
   isSupportedNodeType,
+  isVersionSupported,
+  validateNodeParameters,
   getAllNodeDefinitions,
   getNodesByCategory,
 } from '../src/lib/n8n/registry';
@@ -50,5 +52,47 @@ describe('Verified n8n Node Registry', () => {
     const aiNodes = getNodesByCategory('ai');
     assert.ok(aiNodes.some((n) => n.nodeType === '@n8n/n8n-nodes-langchain.agent'));
     assert.ok(aiNodes.some((n) => n.nodeType === '@n8n/n8n-nodes-langchain.lmChatGoogleGemini'));
+  });
+
+  test('Google Sheets nodes are verified and properly configured', () => {
+    const sheetsTrigger = getNodeDefinition('n8n-nodes-base.googleSheetsTrigger');
+    assert.ok(sheetsTrigger);
+    assert.equal(sheetsTrigger.category, 'trigger');
+    assert.equal(sheetsTrigger.credentialsRequired, 'googleSheetsOAuth2');
+    assert.ok(sheetsTrigger.requiredParameters.includes('documentId'));
+
+    const sheetsAction = getNodeDefinition('n8n-nodes-base.googleSheets');
+    assert.ok(sheetsAction);
+    assert.equal(sheetsAction.category, 'action');
+    assert.ok(sheetsAction.supportedVersions.includes(4.5));
+  });
+
+  test('isVersionSupported detects valid versions and rejects unsupported versions', () => {
+    // Valid versions
+    assert.equal(isVersionSupported('n8n-nodes-base.webhook', 2), true);
+    assert.equal(isVersionSupported('n8n-nodes-base.googleSheets', 4.5), true);
+
+    // Unsupported version
+    assert.equal(isVersionSupported('n8n-nodes-base.webhook', 99), false);
+    // Non-existent node
+    assert.equal(isVersionSupported('n8n-nodes-base.fakeNode', 1), false);
+  });
+
+  test('validateNodeParameters checks required parameters and rejects incomplete configurations', () => {
+    // Valid configuration for Webhook
+    const validWebhookParams = { httpMethod: 'POST', path: 'my-hook' };
+    const validResult = validateNodeParameters('n8n-nodes-base.webhook', validWebhookParams);
+    assert.equal(validResult.valid, true);
+    assert.equal(validResult.missingRequired.length, 0);
+
+    // Incomplete configuration for Webhook (missing path)
+    const invalidWebhookParams = { httpMethod: 'POST' };
+    const invalidResult = validateNodeParameters('n8n-nodes-base.webhook', invalidWebhookParams);
+    assert.equal(invalidResult.valid, false);
+    assert.ok(invalidResult.missingRequired.includes('path'));
+
+    // Unknown node rejection
+    const unknownNodeResult = validateNodeParameters('n8n-nodes-base.fakeNode', {});
+    assert.equal(unknownNodeResult.valid, false);
   });
 });
